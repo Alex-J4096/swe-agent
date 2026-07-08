@@ -15,52 +15,49 @@ client = provider._initialize_client()
 
 def agent_loop(messages: list):
     while True:
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model=MODEL,
-            input=[
+            messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 *messages
             ],
             tools = TOOLS,
-            max_output_tokens=MAX_TOKENS,
+            tool_choice="auto",
+            max_tokens=MAX_TOKENS,
         )
-        # 模型本轮输出放回历史中，历史包含 message / function_call 等 output_item
-        messages.extend(response.output)
 
-        tool_results = []
+        assistant_message = response.choices[0].message
+        messages.append({
+            "role": "assistant",
+            "content": assistant_message.content,
+            "tool_calls": assistant_message.tool_calls,
+        })
 
-        for item in response.output:
-            if item.type == "function_call":
-                print(f"Tool used: {item.name} {item.arguments}")
-                args = json.loads(item.arguments)
+        if not assistant_message.tool_calls:
+            print(assistant_message.content)
+            return assistant_message.content
 
-                # TODO: 根据工具名称调用对应的工具函数，并将结果添加到 tool_results 中
-                # output = run_bash(args["command"])
-                output = "test output"
-                print(f"Tool output: {output[:200]}")
+        for tool_call in assistant_message.tool_calls:
+            tool_name = tool_call.function.name
+            tool_args = tool_call.function.arguments
 
-                tool_results.append({
-                    "type": "function_call_output",
-                    "call_id": item.call_id,
-                    "output": output
-                })
+            print(f"Tool used: {tool_name}")
+            print(f"Tool args: {tool_args}")
 
-            # 没有工具调用，说明模型已经给出最终答案
-            if not tool_results:
-                return response.output_text
+            output = "Test output"
 
-            # 如果有工具调用，但工具调用有结果，也将结果添加到消息中，供模型下一轮使用
-            messages.extend(tool_results)
-
-
-
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": output,
+            })
 
 
 if __name__ == "__main__":
     history = []
     while True:
         try:
-            query = prompt(">")
+            query = prompt("> ")
         except (EOFError, KeyboardInterrupt):
             break
 

@@ -5,7 +5,7 @@ load_dotenv()
 
 base_url = {
     "OpenAI": "https://api.openai.com/v1",
-    "SiliconFlow": "https://api.silicon.com/v1",
+    "SiliconFlow": "https://api.siliconflow.cn/v1",
 }
 
 class Provider:
@@ -20,6 +20,7 @@ class Provider:
         elif self.provider_name == "SiliconFlow":
             return OpenAI(base_url=base_url["SiliconFlow"], api_key=self.api_key)
 
+        return None
 
 
 
