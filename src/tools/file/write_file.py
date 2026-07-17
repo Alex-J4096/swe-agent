@@ -21,10 +21,12 @@ class WriteFileTool(BaseTool[WriteFileArgs]):
     def run(self, args: WriteFileArgs) -> dict[str, Any]:
         file_path = (self.project_root / args.file_path).resolve()
 
-        if not str(file_path).startswith(str(self.project_root)):
+        try:
+            file_path.relative_to(self.project_root)
+        except ValueError:
             return {
                 "ok": False,
-                "error": "path escape project root",
+                "error": "path escape project root."
             }
 
         if file_path.exists() and not args.overwrite:
