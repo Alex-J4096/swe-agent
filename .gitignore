@@ -13,4 +13,4 @@ wheels/
 .env
 
 # ide settings
-.idea
+.idea/
