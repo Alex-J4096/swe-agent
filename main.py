@@ -7,10 +7,11 @@ from src.infrastructure.model_provider import Provider
 from src.tools.toolset import ToolSet
 from src.utils.logger import Logger
 
-MAX_TOKENS = 8000
+MAX_TOKENS = 1024
 MODEL = "deepseek-ai/DeepSeek-V4-Flash"
 SYSTEM_PROMPT = f"""You are a coding assistant at {os.getcwd()}. 
-Use tools to solve tasks. 
+Use tools to solve tasks. Use the todo tool to plan multi-step tasks. Mark in_progress before starting, completed when done.
+Prefer tools over prose.
 Unless requested by the user, or the task does not require coding, you will not provide any explanations or comments, only the code."""
 
 toolset = ToolSet()
@@ -58,9 +59,7 @@ def agent_loop(messages: list[dict[str, Any]]) -> str | None:
             tool_name = tool_call.function.name
             tool_args = tool_call.function.arguments
 
-            Logger.debug("TOOL")
-            print(f"Tool used: {tool_name}")
-            print(f"Tool args: {tool_args}")
+            Logger.debug("TOOL", f"{tool_name} -> {tool_args}")
 
             output = toolset.dispatch(tool_name, tool_args)
 

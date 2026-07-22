@@ -7,6 +7,7 @@ from src.tools.file.edit_file import EditFileTool
 from src.tools.file.read_file import ReadFileTool
 from src.tools.file.write_file import WriteFileTool
 from src.tools.shell.bash import BashTool
+from src.tools.todo_manager import TodoManager
 from src.utils.logger import Logger
 
 
@@ -17,6 +18,7 @@ class ToolSet:
             ReadFileTool(),
             WriteFileTool(),
             EditFileTool(),
+            TodoManager()
         ]
 
         self.tools = {tool.name: tool for tool in tool_list}
@@ -34,7 +36,6 @@ class ToolSet:
             }
         try:
             args = tool.args_model.model_validate_json(arguments_json)
-            Logger.debug("TOOLS",tool.name+arguments_json[50:])
             # print(f"\033[46m [DEBUG]Ran\033[46m {tool.name}: {args}")
             return tool.run(args)
 
