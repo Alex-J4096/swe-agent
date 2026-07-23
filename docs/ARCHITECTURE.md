@@ -1,7 +1,7 @@
 
 ### provider.py
 集成模型供应商。
-初始化一个provier类，后续可以从中拿取到供应商的`base_url`和所提供的`model` name.
+初始化一个provider类，后续可以从中拿取到供应商的`base_url`和所提供的`model` name.
 
 ### tools
 开发一个新工具基本分 4 步：

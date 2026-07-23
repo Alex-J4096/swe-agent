@@ -2,12 +2,14 @@ import json
 import os
 from typing import Any
 # from prompt_toolkit import print_formatted_text as print
+from openai import OpenAIError
 from prompt_toolkit import prompt
 from src.infrastructure.model_provider import Provider
 from src.tools.toolset import ToolSet
 from src.utils.logger import Logger
 
 MAX_TOKENS = 1024
+MAX_TOOL_ITERATIONS = 10
 MODEL = "deepseek-ai/DeepSeek-V4-Flash"
 SYSTEM_PROMPT = f"""You are a coding assistant at {os.getcwd()}. 
 Use tools to solve tasks. Use the todo tool to plan multi-step tasks. Mark in_progress before starting, completed when done.
@@ -23,20 +25,24 @@ if api_key is None:
     exit(1)
 
 provider = Provider(provider_name="SiliconFlow", api_key=api_key)
-client = provider._initialize_client()
+client = provider.client
 
 def agent_loop(messages: list[dict[str, Any]]) -> str | None:
-    while True:
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                *messages
-            ],
-            tools = TOOLS,
-            tool_choice="auto",
-            max_tokens=MAX_TOKENS,
-        )
+    for _ in range(MAX_TOOL_ITERATIONS):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    *messages
+                ],
+                tools=TOOLS,
+                tool_choice="auto",
+                max_tokens=MAX_TOKENS,
+            )
+        except OpenAIError as exc:
+            Logger.error(f"Model request failed: {exc}", "LLM")
+            return None
 
         assistant_message = response.choices[0].message
         tool_calls = [
@@ -45,11 +51,13 @@ def agent_loop(messages: list[dict[str, Any]]) -> str | None:
             else tool_call
             for tool_call in (assistant_message.tool_calls or [])
         ]
-        messages.append({
+        history_message = {
             "role": "assistant",
             "content": assistant_message.content,
-            "tool_calls": tool_calls,
-        })
+        }
+        if tool_calls:
+            history_message["tool_calls"] = tool_calls
+        messages.append(history_message)
 
         if not assistant_message.tool_calls:
             print(assistant_message.content)
@@ -68,6 +76,12 @@ def agent_loop(messages: list[dict[str, Any]]) -> str | None:
                 "tool_call_id": tool_call.id,
                 "content": json.dumps(output, ensure_ascii=False),
             })
+
+    Logger.warning(
+        f"Stopped after {MAX_TOOL_ITERATIONS} tool iterations.",
+        "LLM",
+    )
+    return None
 
 
 if __name__ == "__main__":

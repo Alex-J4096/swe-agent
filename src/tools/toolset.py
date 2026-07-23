@@ -8,7 +8,6 @@ from src.tools.file.read_file import ReadFileTool
 from src.tools.file.write_file import WriteFileTool
 from src.tools.shell.bash import BashTool
 from src.tools.todo_manager import TodoManager
-from src.utils.logger import Logger
 
 
 class ToolSet:
