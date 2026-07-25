@@ -9,4 +9,5 @@ dependencies = [
     "httpx[socks]>=0.28.1",
     "openai>=2.44.0",
     "prompt-toolkit>=3.0.52",
+    "pyyaml>=6.0.3",
 ]

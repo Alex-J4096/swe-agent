@@ -1,23 +1,30 @@
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
+from src.infrastructure.skill_loader import SkillLoader
 from src.tools.base import BaseTool
 from src.tools.file.edit_file import EditFileTool
 from src.tools.file.read_file import ReadFileTool
 from src.tools.file.write_file import WriteFileTool
 from src.tools.shell.bash import BashTool
-from src.tools.todo_manager import TodoManager
+from src.tools.skill.load_skill import LoadSkill
+from src.tools.todo_manager.todo_manager import TodoManager
 
 
 class ToolSet:
     def __init__(self) -> None:
+        self.skill_loader = SkillLoader(
+            Path.cwd() /".agents" / "skills"
+        )
         tool_list: list[BaseTool[Any]] = [
             BashTool(),
             ReadFileTool(),
             WriteFileTool(),
             EditFileTool(),
-            TodoManager()
+            TodoManager(),
+            LoadSkill(self.skill_loader),
         ]
 
         self.tools = {tool.name: tool for tool in tool_list}

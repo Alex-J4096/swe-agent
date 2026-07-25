@@ -11,13 +11,17 @@ from src.utils.logger import Logger
 MAX_TOKENS = 1024
 MAX_TOOL_ITERATIONS = 10
 MODEL = "deepseek-ai/DeepSeek-V4-Flash"
+
+toolset = ToolSet()
+TOOLS = toolset.schemas()
+
 SYSTEM_PROMPT = f"""You are a coding assistant at {os.getcwd()}. 
+Available skills: {toolset.skill_loader.get_skill_description()}.
+When a task matches an available skill, call load_skill first.`
 Use tools to solve tasks. Use the todo tool to plan multi-step tasks. Mark in_progress before starting, completed when done.
 Prefer tools over prose.
 Unless requested by the user, or the task does not require coding, you will not provide any explanations or comments, only the code."""
 
-toolset = ToolSet()
-TOOLS = toolset.schemas()
 
 api_key=os.getenv("SILICONFLOW_API_KEY")
 if api_key is None:
