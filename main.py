@@ -1,12 +1,16 @@
 import json
 import os
-from typing import Any
 # from prompt_toolkit import print_formatted_text as print
 from openai import OpenAIError
 from prompt_toolkit import prompt
+
 from src.infrastructure.model_provider import Provider
+from src.runtime.session import Session
 from src.tools.toolset import ToolSet
 from src.utils.logger import Logger
+from src.utils.slash_commands.base import CommandContext
+from src.utils.slash_commands.command_register import CommandRegistry
+from src.utils.slash_commands.factory import create_command_registry
 
 MAX_TOKENS = 1024
 MAX_TOOL_ITERATIONS = 10
@@ -31,14 +35,14 @@ if api_key is None:
 provider = Provider(provider_name="SiliconFlow", api_key=api_key)
 client = provider.client
 
-def agent_loop(messages: list[dict[str, Any]]) -> str | None:
+def agent_loop(session: Session) -> str | None:
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
             response = client.chat.completions.create(
-                model=MODEL,
+                model=session.model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    *messages
+                    *session.history
                 ],
                 tools=TOOLS,
                 tool_choice="auto",
@@ -61,7 +65,7 @@ def agent_loop(messages: list[dict[str, Any]]) -> str | None:
         }
         if tool_calls:
             history_message["tool_calls"] = tool_calls
-        messages.append(history_message)
+        session.history.append(history_message)
 
         if not assistant_message.tool_calls:
             print(assistant_message.content)
@@ -75,7 +79,7 @@ def agent_loop(messages: list[dict[str, Any]]) -> str | None:
 
             output = toolset.dispatch(tool_name, tool_args)
 
-            messages.append({
+            session.history.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
                 "content": json.dumps(output, ensure_ascii=False),
@@ -89,13 +93,32 @@ def agent_loop(messages: list[dict[str, Any]]) -> str | None:
 
 
 if __name__ == "__main__":
-    history = []
-    while True:
+    session = Session(model=MODEL)
+    command_context = CommandContext(session=session, toolset=toolset)
+    command_registry = create_command_registry()
+
+    while session.running:
         try:
-            query = prompt("> ")
+            query = prompt("> ").strip()
         except (EOFError, KeyboardInterrupt):
             break
 
-        history.append({"role": "user", "content": query})
-        response = agent_loop(history)
+        if not query:
+            continue
+
+        if query.startswith("//"):
+            query = query[1:]
+        elif query.startswith("/"):
+            result = command_registry.dispatch(query, command_context)
+
+            if result.message:
+                print(result.message)
+
+            if result.exit_requested:
+                session.running = False
+
+            continue
+
+        session.history.append({"role": "user", "content": query})
+        response = agent_loop(session)
         Logger.debug("LLM", response)
