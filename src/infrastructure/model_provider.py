@@ -1,3 +1,5 @@
+from typing import List
+
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -20,7 +22,15 @@ class Provider:
         elif self.provider_name == "SiliconFlow":
             return OpenAI(base_url=base_url["SiliconFlow"], api_key=self.api_key)
 
-        return None
+        raise ValueError(f"Unknown provider: {self.provider_name}")
 
+    def list_model_ids(self) -> List[str]:
+        response = self.client.models.list()
+
+        return sorted({
+            model.id
+            for model in response.data
+            if model.id
+        })
 
 

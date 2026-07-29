@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from src.infrastructure.model_provider import Provider
 from src.runtime.session import Session
 from src.tools.toolset import ToolSet
 
@@ -16,6 +17,7 @@ class CommandResult:
 class CommandContext:
     session: Session
     toolset: ToolSet
+    provider: Provider
 
 
 class BaseCommand(ABC):

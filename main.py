@@ -9,7 +9,6 @@ from src.runtime.session import Session
 from src.tools.toolset import ToolSet
 from src.utils.logger import Logger
 from src.utils.slash_commands.base import CommandContext
-from src.utils.slash_commands.command_register import CommandRegistry
 from src.utils.slash_commands.factory import create_command_registry
 
 MAX_TOKENS = 1024
@@ -94,7 +93,7 @@ def agent_loop(session: Session) -> str | None:
 
 if __name__ == "__main__":
     session = Session(model=MODEL)
-    command_context = CommandContext(session=session, toolset=toolset)
+    command_context = CommandContext(session=session, toolset=toolset, provider=provider)
     command_registry = create_command_registry()
 
     while session.running:
