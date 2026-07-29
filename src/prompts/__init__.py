@@ -1,4 +1,8 @@
 from pathlib import Path
 
-SYSTEM = (Path(__file__).parent / "system.md").read_text(encoding="utf-8")
-COMPACT = (Path(__file__).parent / "compact.md").read_text(encoding="utf-8")
+
+def load_prompt(name: str) -> str:
+    return (Path(__file__).parent / f"{name}.md").read_text(encoding="utf-8")
+
+
+SYSTEM = load_prompt("system")
