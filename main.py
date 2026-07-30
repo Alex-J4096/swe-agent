@@ -1,8 +1,11 @@
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 from prompt_toolkit import prompt
 
+from src.runtime.subagent_service import SubagentService
 from src.infrastructure.model_provider import Provider
 from src.prompts import SYSTEM
 from src.runtime.agent_runner import AgentRunner
@@ -11,10 +14,12 @@ from src.tools.toolset import ToolSet
 from src.utils.logger import Logger
 from src.utils.slash_commands.base import CommandContext
 from src.utils.slash_commands.factory import create_command_registry
+from src.tools.subagent.delegate_task import DelegateTaskTool
 
 MAX_TOKENS = 1024
 MAX_TOOL_ITERATIONS = 10
 MODEL = "deepseek-ai/DeepSeek-V4-Flash"
+TOOL_ARGUMENT_PREVIEW_LENGTH = 120
 
 
 def build_system_prompt(toolset: ToolSet) -> str:
@@ -26,6 +31,36 @@ def build_system_prompt(toolset: ToolSet) -> str:
 
 def log_tool_call(name: str, arguments: str) -> None:
     Logger.debug("TOOL", f"{name} -> {arguments}")
+
+
+def display_tool_call(name: str, arguments: str) -> None:
+    """Display a compact, single-line summary of a tool call."""
+    try:
+        parsed_arguments = json.loads(arguments)
+        preview = json.dumps(
+            parsed_arguments,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except (json.JSONDecodeError, TypeError):
+        preview = " ".join(str(arguments).split())
+
+    if preview == "{}":
+        preview = ""
+    elif len(preview) > TOOL_ARGUMENT_PREVIEW_LENGTH:
+        preview = f"{preview[:TOOL_ARGUMENT_PREVIEW_LENGTH - 1]}…"
+
+    suffix = f"  {preview}" if preview else ""
+    print(f"  → {name}{suffix}")
+
+
+def display_tool_result(name: str, output: dict[str, Any]) -> None:
+    if name != "todo_manager" or not output.get("ok"):
+        return
+
+    content = output.get("content")
+    if isinstance(content, str) and content:
+        print(content)
 
 
 def main() -> None:
@@ -41,8 +76,17 @@ def main() -> None:
         max_tokens=MAX_TOKENS,
         max_tool_iterations=MAX_TOOL_ITERATIONS,
     )
+
     system_prompt = build_system_prompt(toolset)
     session = Session(model=MODEL)
+
+    subagent_toolset = toolset.view(exclude={"delegate_task"})
+    subagent_service = SubagentService(runner=runner, toolset=subagent_toolset)
+
+    toolset.register(
+        DelegateTaskTool(service=subagent_service)
+    )
+
     command_context = CommandContext(session=session, toolset=toolset, provider=provider)
     command_registry = create_command_registry()
 
@@ -73,13 +117,15 @@ def main() -> None:
             session=session,
             toolset=toolset,
             system_prompt=system_prompt,
-            on_tool_call=log_tool_call,
+            on_tool_call=display_tool_call,
+            # on_tool_result 只用于特定方法的打印结果，例如: todo_manager
+            on_tool_result=display_tool_result,
         )
 
         if result.ok:
             if result.content:
                 print(result.content)
-            Logger.debug("LLM", result.content)
+           # Logger.debug("LLM", result.content)
         else:
             Logger.error(result.error or "Agent run failed.", "LLM")
 

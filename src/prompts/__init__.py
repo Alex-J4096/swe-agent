@@ -6,3 +6,5 @@ def load_prompt(name: str) -> str:
 
 
 SYSTEM = load_prompt("system")
+SUBAGENT = load_prompt("subagent")
+TODO_REMINDER = load_prompt("todo_reminder")

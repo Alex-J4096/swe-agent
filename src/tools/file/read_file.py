@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
-from src.tools.base import BaseTool
+from src.tools.base import BaseTool, ToolContext
 
 class ReadFileArgs(BaseModel):
     file_path: str = Field(description="File path relative to project root.")
@@ -15,7 +15,11 @@ class ReadFileTool(BaseTool[ReadFileArgs]):
     def __init__(self, project_root: str | Path=".") -> None:
         self.project_root = Path(project_root).resolve()
 
-    def run(self, args: ReadFileArgs) -> dict[str, Any]:
+    def run(
+        self,
+        args: ReadFileArgs,
+        context: ToolContext,
+    ) -> dict[str, Any]:
         file_path = (self.project_root / args.file_path).resolve()
 
         try:

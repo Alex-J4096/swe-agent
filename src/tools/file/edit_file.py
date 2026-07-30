@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.tools.base import BaseTool
+from src.tools.base import BaseTool, ToolContext
 
 
 class EditFileArgs(BaseModel):
@@ -25,7 +25,11 @@ class EditFileTool(BaseTool[EditFileArgs]):
     def __init__(self, project_root: str | Path = ".") -> None:
         self.project_root = Path(project_root).resolve()
 
-    def run(self, args: EditFileArgs) -> dict[str, Any]:
+    def run(
+        self,
+        args: EditFileArgs,
+        context: ToolContext,
+    ) -> dict[str, Any]:
         file_path = (self.project_root / args.file_path).resolve()
 
         try:

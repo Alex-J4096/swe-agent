@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.tools.base import BaseTool
+from src.tools.base import BaseTool, ToolContext
 
 
 class BashArgs(BaseModel):
@@ -25,7 +25,11 @@ class BashTool(BaseTool[BashArgs]):
     def __init__(self, project_root: str | Path = ".") -> None:
         self.project_root = Path(project_root).resolve()
 
-    def run(self, args: BashArgs) -> dict[str, Any]:
+    def run(
+        self,
+        args: BashArgs,
+        context: ToolContext,
+    ) -> dict[str, Any]:
         workdir = (self.project_root / args.cwd).resolve()
 
         if not str(workdir).startswith(str(self.project_root)):

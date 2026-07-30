@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 
 from src.infrastructure.skill_loader import SkillLoader
-from src.tools.base import BaseTool
+from src.tools.base import BaseTool, ToolContext
 
 
 class LoadSkillArgs(BaseModel):
@@ -15,7 +15,7 @@ class LoadSkill(BaseTool[LoadSkillArgs]):
     def __init__(self, loader: SkillLoader) -> None:
         self.loader = loader
 
-    def run(self, args: LoadSkillArgs) -> dict:
+    def run(self, args: LoadSkillArgs, context: ToolContext) -> dict:
         if args.name not in self.loader.skills:
             return {
                 "ok": False,

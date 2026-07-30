@@ -1,6 +1,36 @@
 from pydantic import BaseModel, Field
 
-from src.tools.base import BaseTool
+from src.runtime.session import Session
+from src.tools.base import BaseTool, ToolContext
+
+TODO_STATE_KEY = "todo_manager"
+
+
+def get_todo_tasks(session: Session) -> list[dict[str, str]]:
+    tasks = session.tool_state.get(TODO_STATE_KEY, [])
+    return tasks if isinstance(tasks, list) else []
+
+
+def has_unfinished_tasks(tasks: list[dict[str, str]]) -> bool:
+    return any(task.get("status") != "completed" for task in tasks)
+
+
+def render_todo_list(tasks: list[dict[str, str]]) -> str:
+    if not tasks:
+        return "No todo tasks."
+
+    lines = []
+    for task in tasks:
+        marker = {
+            "pending": "[ ]",
+            "in_progress": "[>]",
+            "completed": "[x]",
+        }[task["status"]]
+        lines.append(f"{marker} #{task['id']}: {task['text']}")
+
+    done = sum(1 for task in tasks if task["status"] == "completed")
+    lines.append(f"\n({done}/{len(tasks)} completed)")
+    return "\n".join(lines)
 
 
 class TodoManagerArgs(BaseModel):
@@ -13,18 +43,18 @@ class TodoManagerArgs(BaseModel):
 
 
 class TodoManager(BaseTool[TodoManagerArgs]):
-    name = "todo_manager"
-    description = "Update task list. Track progress on multi-step tasks."
+    name = TODO_STATE_KEY
+    description = (
+        "Store the complete todo list for the current session. "
+        "Always include every item and update statuses as work progresses. "
+        "Mark an item completed immediately after finishing it."
+    )
     args_model = TodoManagerArgs
 
-    def __init__(self):
-        # td清单
-        self.tasks_list = []
-
-    def update(self, tasks: list) -> str:
+    def validate(self, tasks: list) -> list[dict[str, str]]:
         if len(tasks) > 20:
             raise ValueError("Max 20 todos allowed")
-        # 校验任务的合法性
+
         validated = []
         in_progress_count = 0
         for i, task in enumerate(tasks):
@@ -47,31 +77,13 @@ class TodoManager(BaseTool[TodoManagerArgs]):
         if in_progress_count > 1:
             raise ValueError("Only one task can be in_progress at a time.")
 
-        self.tasks_list = validated
-        return self.redner()
+        return validated
 
-    def run(self, args: TodoManagerArgs) -> dict:
-        content = self.update(args.tasks)
-        print(content)
+    def run(self, args: TodoManagerArgs, context: ToolContext) -> dict:
+        tasks = self.validate(args.tasks)
+        context.session.tool_state[self.name] = tasks
+
         return {
             "ok": True,
-            "content": content,
+            "content": render_todo_list(tasks),
         }
-
-    # 打印 td list
-    def redner(self) -> str:
-        if not self.tasks_list:
-            return "No todo tasks."
-
-        lines = []
-        for task in self.tasks_list:
-            marker = {
-                "pending": "[ ]",
-                "in_progress": "[>]",
-                "completed": "[x]",
-            }[task["status"]]
-            lines.append(f"{marker} #{task['id']}: {task['text']}")
-        done = sum(1 for t in self.tasks_list if t["status"] == "completed")
-        lines.append(f"\n({done}/{len(self.tasks_list)} completed)")
-
-        return "\n".join(lines)
