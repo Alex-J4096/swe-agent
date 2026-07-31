@@ -5,6 +5,11 @@ from typing import Any
 
 from openai import OpenAIError
 
+from src.infrastructure.compact import (
+    micro_compact,
+    snip_compact,
+    tool_result_budget,
+)
 from src.infrastructure.model_provider import Provider
 from src.prompts import TODO_REMINDER
 from src.runtime.session import Session
@@ -32,14 +37,18 @@ class AgentRunner:
         max_tokens: int = 1024,
         max_tool_iterations: int = 10,
         todo_reminder_interval: int = 3,
+        max_history_messages: int = 50,
     ) -> None:
         if todo_reminder_interval < 1:
             raise ValueError("todo_reminder_interval must be at least 1")
+        if max_history_messages < 3:
+            raise ValueError("max_history_messages must be at least 3")
 
         self.client = provider.client
         self.max_tokens = max_tokens
         self.max_tool_iterations = max_tool_iterations
         self.todo_reminder_interval = todo_reminder_interval
+        self.max_history_messages = max_history_messages
 
     def run(
         self,
@@ -54,6 +63,7 @@ class AgentRunner:
         iterations_since_todo_update = 0
 
         for _ in range(self.max_tool_iterations):
+            self._apply_message_limit(session)
             effective_system_prompt = system_prompt
             todo_tasks = get_todo_tasks(session)
             if (
@@ -106,6 +116,7 @@ class AgentRunner:
             session.history.append(history_message)
 
             if not assistant_message.tool_calls:
+                self._compact_after_round(session)
                 return AgentRunResult(
                     ok=True,
                     content=assistant_message.content,
@@ -139,6 +150,8 @@ class AgentRunner:
                     }
                 )
 
+            self._compact_after_round(session)
+
             if todo_updated:
                 iterations_since_todo_update = 0
             elif has_unfinished_tasks(get_todo_tasks(session)):
@@ -152,4 +165,17 @@ class AgentRunner:
                 f"Stopped after {self.max_tool_iterations} "
                 "tool iterations."
             ),
+        )
+
+    def _compact_after_round(self, session: Session) -> None:
+        tool_result_budget(session.history)
+        micro_compact(session.history)
+        self._apply_message_limit(session)
+
+    def _apply_message_limit(self, session: Session) -> None:
+        if len(session.history) <= self.max_history_messages:
+            return
+        session.history[:] = snip_compact(
+            session.history,
+            max_messages=self.max_history_messages,
         )

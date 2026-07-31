@@ -11,6 +11,7 @@ wheels/
 
 # Environment variables
 .env
+.swe-agent/
 
 # IDE and editor settings
 .idea/
