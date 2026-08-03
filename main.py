@@ -14,6 +14,7 @@ from src.runtime.agent_runner import AgentRunner
 from src.runtime.session import Session
 from src.tools.toolset import ToolSet
 from src.utils.logger import Logger
+from src.utils.welcome import print_welcome
 from src.utils.slash_commands.base import CommandContext
 from src.utils.slash_commands.factory import create_command_registry
 from src.tools.subagent.delegate_task import DelegateTaskTool
@@ -96,6 +97,7 @@ def main() -> None:
 
     provider = Provider(provider_name="SiliconFlow", api_key=api_key)
     session = Session(model=MODEL)
+    print_welcome(session, workdir)
     memory_store = MemoryStore(
         workdir,
         client=provider.client,
