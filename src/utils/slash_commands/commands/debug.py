@@ -7,6 +7,7 @@ from src.utils.slash_commands.base import BaseCommand, CommandContext, CommandRe
 class DebugCommand(BaseCommand):
     name = "debug"
     description = "Show formatted session history"
+    usage = "/debug"
 
     def execute(self, args: list[str], context: CommandContext) -> CommandResult:
         if args:

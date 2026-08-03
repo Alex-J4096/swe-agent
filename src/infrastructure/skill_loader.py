@@ -14,7 +14,7 @@ class SkillLoader:
             return
         for f in sorted(self.skill_path.rglob("SKILL.md")):
             text = f.read_text()
-            meta, body = self._parse_front_matter(text)
+            meta, body = self._parse_frontmatter(text)
             name = meta.get("name", f.parent.name)
             self.skills[name] = {
                 "meta": meta,
@@ -22,7 +22,7 @@ class SkillLoader:
                 "path": str(f)
             }
 
-    def _parse_front_matter(self, text: str) -> tuple:
+    def _parse_frontmatter(self, text: str) -> tuple:
         """Parse YAML frontmatter between --- delimiters."""
         match = re.match(r"^---\n(.*?)\n---\n(.*)", text, re.DOTALL)
         if not match:

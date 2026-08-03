@@ -9,6 +9,7 @@ from src.utils.slash_commands.base import BaseCommand, CommandContext, CommandRe
 class ModelCommand(BaseCommand):
     name = "model"
     description = "Switch models"
+    usage = "/model"
 
     def execute(self, args: list[str], context: CommandContext) -> CommandResult:
         if args:

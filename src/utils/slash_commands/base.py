@@ -23,6 +23,7 @@ class CommandContext:
 class BaseCommand(ABC):
     name: str
     description: str
+    usage: str
     aliases: tuple[str, ...] = ()
 
     @abstractmethod

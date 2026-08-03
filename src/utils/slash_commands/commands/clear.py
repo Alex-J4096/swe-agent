@@ -6,6 +6,7 @@ from src.utils.slash_commands.base import CommandContext, CommandResult
 class ClearCommand(BaseCommand):
     name = "clear"
     description = "Clear current session"
+    usage = "/clear"
 
     def execute(self, args: list[str], context: CommandContext) -> CommandResult:
         if args:

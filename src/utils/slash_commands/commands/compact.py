@@ -12,6 +12,7 @@ MAX_COMPACT_FAILURES = 3
 class CompactCommand(BaseCommand):
     name = "compact"
     description = "Summarize and compact the current session"
+    usage = "/compact"
 
     def execute(
         self,
@@ -25,6 +26,10 @@ class CompactCommand(BaseCommand):
             return CommandResult("Session history is empty.")
 
         message_count = len(context.session.history)
+        print(
+            f"Starting conversation compaction ({message_count} messages)...",
+            flush=True,
+        )
         last_error = "Unknown compact failure."
         for _ in range(MAX_COMPACT_FAILURES):
             result = compact_history(
