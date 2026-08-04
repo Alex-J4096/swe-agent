@@ -200,6 +200,15 @@ wheels = [
 ]
 
 [[package]]
+name = "path"
+version = "17.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/52/a7bdd5ef8488977d354b7915d1e75009bebbd04f73eff14e52372d5e9435/path-17.1.1.tar.gz", hash = "sha256:2dfcbfec8b4d960f3469c52acf133113c2a8bf12ac7b98d629fa91af87248d42", size = 50528, upload-time = "2025-07-27T20:40:23.79Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/50/11c9ee1ede64b45d687fd36eb8768dafc57afc78b4d83396920cfd69ed30/path-17.1.1-py3-none-any.whl", hash = "sha256:ec7e136df29172e5030dd07e037d55f676bdb29d15bfa09b80da29d07d3b9303", size = 23936, upload-time = "2025-07-27T20:40:22.453Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -387,6 +396,7 @@ dependencies = [
     { name = "dotenv" },
     { name = "httpx", extra = ["socks"] },
     { name = "openai" },
+    { name = "path" },
     { name = "prompt-toolkit" },
     { name = "pytest" },
     { name = "pyyaml" },
@@ -397,6 +407,7 @@ requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "openai", specifier = ">=2.44.0" },
+    { name = "path", specifier = ">=17.1.1" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pyyaml", specifier = ">=6.0.3" },

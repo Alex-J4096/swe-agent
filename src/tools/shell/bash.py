@@ -32,7 +32,7 @@ class BashTool(BaseTool[BashArgs]):
     ) -> dict[str, Any]:
         workdir = (self.project_root / args.cwd).resolve()
 
-        if not str(workdir).startswith(str(self.project_root)):
+        if not workdir.is_relative_to(self.project_root):
             return {
                 "ok": False,
                 "stdout": "",
@@ -64,7 +64,6 @@ class BashTool(BaseTool[BashArgs]):
                 "stderr": f"Timeout after {args.timeout_seconds}s",
                 "exit_code": -1
             }
-
 
 
 

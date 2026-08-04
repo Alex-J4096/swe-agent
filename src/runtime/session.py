@@ -9,4 +9,5 @@ class Session:
     session_id: str = field(default_factory=lambda: str(uuid4()))
     history: list[dict[str, Any]] = field(default_factory=list)
     tool_state: dict[str, Any] = field(default_factory=dict)
+    approved_command_prefixes: set[tuple[str, ...]] = field(default_factory=set)
     running: bool = True

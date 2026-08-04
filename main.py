@@ -57,7 +57,7 @@ def log_tool_call(name: str, arguments: str) -> None:
     Logger.debug("TOOL", f"{name} -> {arguments}")
 
 
-def display_tool_call(name: str, arguments: str) -> None:
+def display_tool_requested(name: str, arguments: str) -> None:
     """Display a compact, single-line summary of a tool call."""
     try:
         parsed_arguments = json.loads(arguments)
@@ -107,6 +107,7 @@ def main() -> None:
     toolset = ToolSet()
     runner = AgentRunner(
         provider=provider,
+        workdir=workdir,
         max_tokens=MAX_TOKENS,
         max_tool_iterations=MAX_TOOL_ITERATIONS,
     )
@@ -162,7 +163,7 @@ def main() -> None:
             session=session,
             toolset=toolset,
             system_prompt=turn_system_prompt,
-            on_tool_call=display_tool_call,
+            on_tool_requested=display_tool_requested,
             # on_tool_result 只用于特定方法的打印结果，例如: todo_manager
             on_tool_result=display_tool_result,
         )
