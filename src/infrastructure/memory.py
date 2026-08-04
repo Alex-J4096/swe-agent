@@ -8,6 +8,8 @@ from typing import Any
 import yaml
 from openai import OpenAIError
 
+from src.infrastructure.retry import request_with_retry
+
 MEMORY_TYPES = ("user", "feedback", "project", "reference")
 MEMORY_INDEX_NAME = "MEMORY.md"
 
@@ -406,19 +408,21 @@ class MemoryStore:
             return None
 
         try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a memory management component. "
-                            "Follow the requested JSON output format exactly."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
+            response = request_with_retry(
+                lambda: self.client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a memory management component. "
+                                "Follow the requested JSON output format exactly."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=max_tokens,
+                )
             )
         except (OpenAIError, AttributeError, IndexError, TypeError):
             return None

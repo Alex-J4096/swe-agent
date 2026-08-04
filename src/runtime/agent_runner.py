@@ -11,6 +11,7 @@ from src.infrastructure.compact import (
     tool_result_budget,
 )
 from src.infrastructure.model_provider import Provider
+from src.infrastructure.retry import request_with_retry
 from src.prompts import TODO_REMINDER
 from src.runtime.session import Session
 from src.tools.base import ToolContext
@@ -23,6 +24,13 @@ from src.tools.todo_manager.todo_manager import (
 from src.tools.toolset import ToolSet
 
 
+CONTINUATION_PROMPT = (
+    "Your previous response was truncated because it reached the token limit. "
+    "Continue from exactly where it stopped. Do not repeat any text that was "
+    "already written."
+)
+
+
 @dataclass(frozen=True)
 class AgentRunResult:
     ok: bool
@@ -31,6 +39,9 @@ class AgentRunResult:
 
 
 class AgentRunner:
+    MAX_TRUNCATION_CONTINUATIONS = 3
+    TRUNCATION_MAX_TOKENS_MULTIPLIER = 8
+
     def __init__(
         self,
         provider: Provider,
@@ -81,18 +92,12 @@ class AgentRunner:
                 iterations_since_todo_update = 0
 
             try:
-                response = self.client.chat.completions.create(
-                    model=session.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": effective_system_prompt,
-                        },
-                        *session.history,
-                    ],
-                    tools=tools,
-                    tool_choice="auto",
-                    max_tokens=self.max_tokens,
+                response, recovered_content = (
+                    self._request_with_truncation_recovery(
+                        session=session,
+                        system_prompt=effective_system_prompt,
+                        tools=tools,
+                    )
                 )
             except OpenAIError as exc:
                 return AgentRunResult(
@@ -105,21 +110,29 @@ class AgentRunner:
                 tool_call.model_dump()
                 if hasattr(tool_call, "model_dump")
                 else tool_call
-                for tool_call in (assistant_message.tool_calls or [])
+                for tool_call in (
+                    []
+                    if recovered_content is not None
+                    else (assistant_message.tool_calls or [])
+                )
             ]
             history_message = {
                 "role": "assistant",
-                "content": assistant_message.content,
+                "content": (
+                    recovered_content
+                    if recovered_content is not None
+                    else assistant_message.content
+                ),
             }
             if tool_calls:
                 history_message["tool_calls"] = tool_calls
             session.history.append(history_message)
 
-            if not assistant_message.tool_calls:
+            if not tool_calls:
                 self._compact_after_round(session)
                 return AgentRunResult(
                     ok=True,
-                    content=assistant_message.content,
+                    content=history_message["content"],
                 )
 
             todo_updated = False
@@ -166,6 +179,102 @@ class AgentRunner:
                 "tool iterations."
             ),
         )
+
+    def _request_with_truncation_recovery(
+        self,
+        session: Session,
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> tuple[Any, str | None]:
+        base_messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            *session.history,
+        ]
+
+        def request(messages: list[dict[str, Any]], max_tokens: int) -> Any:
+            return request_with_retry(
+                lambda: self.client.chat.completions.create(
+                    model=session.model,
+                    messages=list(messages),
+                    tools=tools,
+                    tool_choice="auto",
+                    max_tokens=max_tokens,
+                )
+            )
+
+        response = request(base_messages, self.max_tokens)
+        if not self._response_was_truncated(response):
+            return response, None
+
+        expanded_max_tokens = (
+            self.max_tokens * self.TRUNCATION_MAX_TOKENS_MULTIPLIER
+        )
+        response = request(base_messages, expanded_max_tokens)
+        if not self._response_was_truncated(response):
+            return response, None
+
+        first_partial = response.choices[0].message.content
+        first_partial_text = (
+            first_partial if isinstance(first_partial, str) else ""
+        )
+        parts = [first_partial_text]
+        continuation_messages = [
+            *base_messages,
+            {
+                "role": "assistant",
+                "content": first_partial_text,
+            },
+        ]
+
+        for _ in range(self.MAX_TRUNCATION_CONTINUATIONS):
+            continuation_messages.append(
+                {
+                    "role": "user",
+                    "content": CONTINUATION_PROMPT,
+                }
+            )
+            response = request(continuation_messages, expanded_max_tokens)
+            continuation = response.choices[0].message.content
+            continuation_text = (
+                continuation if isinstance(continuation, str) else ""
+            )
+            parts.append(continuation_text)
+
+            if not self._response_was_truncated(response):
+                return response, "".join(parts)
+
+            continuation_messages.append(
+                {
+                    "role": "assistant",
+                    "content": continuation_text,
+                }
+            )
+
+        return response, "".join(parts)
+
+    @staticmethod
+    def _response_was_truncated(response: Any) -> bool:
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            return True
+
+        choices = getattr(response, "choices", [])
+        if not choices:
+            return False
+
+        choice = choices[0]
+        if getattr(choice, "stop_reason", None) == "max_tokens":
+            return True
+        if getattr(choice, "finish_reason", None) in {
+            "length",
+            "max_tokens",
+        }:
+            return True
+
+        message = getattr(choice, "message", None)
+        return getattr(message, "stop_reason", None) == "max_tokens"
 
     def _compact_after_round(self, session: Session) -> None:
         tool_result_budget(session.history)

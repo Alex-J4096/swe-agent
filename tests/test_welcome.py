@@ -26,7 +26,7 @@ class WelcomeTests(unittest.TestCase):
 
         panel = render_welcome(session, workdir)
 
-        self.assertIn("Welcome to SWE Agent!", panel)
+        self.assertIn("Welcome to TOY SWE CLI!", panel)
         self.assertIn(f"Directory: {format_workdir(workdir)}", panel)
         self.assertIn("Session:   session-123", panel)
         self.assertIn("Model:     test-model", panel)

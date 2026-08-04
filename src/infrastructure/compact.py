@@ -12,6 +12,8 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
+from src.infrastructure.retry import request_with_retry
+
 # 保留最近三个工具调用的结果
 KEEP_RECENT = 3
 PRESERVE_RESULT_TOOLS = {
@@ -225,10 +227,12 @@ def compact_history(
         ),
     ]
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=summary_messages,
-            max_tokens=1_024,
+        response = request_with_retry(
+            lambda: client.chat.completions.create(
+                model=model,
+                messages=summary_messages,
+                max_tokens=1_024,
+            )
         )
     except OpenAIError as exc:
         return CompactHistoryResult(

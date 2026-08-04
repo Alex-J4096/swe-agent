@@ -127,6 +127,105 @@ class AgentRunnerCompactTests(unittest.TestCase):
         )
 
 
+class AgentRunnerTruncationRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def response(
+        content: str,
+        *,
+        finish_reason: str | None = None,
+        stop_reason: str | None = None,
+    ) -> SimpleNamespace:
+        choice = SimpleNamespace(
+            message=SimpleNamespace(content=content, tool_calls=None),
+        )
+        if finish_reason is not None:
+            choice.finish_reason = finish_reason
+        if stop_reason is not None:
+            choice.stop_reason = stop_reason
+        return SimpleNamespace(choices=[choice])
+
+    def make_runner(self, responses: list[SimpleNamespace]):
+        self.requests: list[dict] = []
+        response_iter = iter(responses)
+
+        def create(**kwargs):
+            self.requests.append(
+                {**kwargs, "messages": list(kwargs["messages"])}
+            )
+            return next(response_iter)
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create),
+            ),
+        )
+        return AgentRunner(
+            provider=SimpleNamespace(client=client),
+            max_tokens=100,
+        )
+
+    def test_retries_truncated_request_with_eight_times_max_tokens(self):
+        runner = self.make_runner([
+            self.response("partial", stop_reason="max_tokens"),
+            self.response("complete"),
+        ])
+        session = Session(
+            model="test-model",
+            history=[{"role": "user", "content": "task"}],
+        )
+
+        result = runner.run(
+            session,
+            SimpleNamespace(schemas=lambda: []),
+            "system",
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.content, "complete")
+        self.assertEqual(
+            [request["max_tokens"] for request in self.requests],
+            [100, 800],
+        )
+        self.assertEqual(
+            self.requests[0]["messages"],
+            self.requests[1]["messages"],
+        )
+
+    def test_continues_truncated_output_at_most_three_times(self):
+        runner = self.make_runner([
+            self.response("ignored", stop_reason="max_tokens"),
+            self.response("part-1", finish_reason="length"),
+            self.response("part-2", finish_reason="length"),
+            self.response("part-3", finish_reason="length"),
+            self.response("part-4", finish_reason="length"),
+        ])
+        session = Session(
+            model="test-model",
+            history=[{"role": "user", "content": "task"}],
+        )
+
+        result = runner.run(
+            session,
+            SimpleNamespace(schemas=lambda: []),
+            "system",
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.content, "part-1part-2part-3part-4")
+        self.assertEqual(len(self.requests), 5)
+        self.assertEqual(
+            [request["max_tokens"] for request in self.requests],
+            [100, 800, 800, 800, 800],
+        )
+        self.assertEqual(
+            self.requests[2]["messages"][-1]["content"],
+            "Your previous response was truncated because it reached the token limit. "
+            "Continue from exactly where it stopped. Do not repeat any text that was "
+            "already written.",
+        )
+        self.assertEqual(session.history[-1]["content"], result.content)
+
+
 class CompactCommandTests(unittest.TestCase):
     def test_stops_after_three_failures_without_persisting_state(self) -> None:
         session = Session(
