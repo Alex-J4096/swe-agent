@@ -444,7 +444,7 @@ class AgentRunner:
             if checker(args):
                 return rule["message"]
 
-            return None
+        return None
 
     @staticmethod
     def _permission_target(args: dict[str, Any]) -> str:

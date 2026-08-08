@@ -11,6 +11,7 @@ from src.tools.file.read_file import ReadFileTool
 from src.tools.file.write_file import WriteFileTool
 from src.tools.shell.bash import BashTool
 from src.tools.skill.load_skill import LoadSkill
+from src.tools.task.task import TaskManager
 from src.tools.todo_manager.todo_manager import TodoManager
 
 
@@ -49,6 +50,7 @@ class ToolSet:
                 WriteFileTool(),
                 EditFileTool(),
                 TodoManager(),
+                TaskManager(),
                 LoadSkill(self.skill_loader),
             ]
         )
