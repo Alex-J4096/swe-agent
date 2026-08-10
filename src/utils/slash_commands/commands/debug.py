@@ -17,13 +17,23 @@ class DebugCommand(BaseCommand):
         if not history:
             return CommandResult("Session history is empty.")
 
-        messages = [
-            self._format_message(index, message)
-            for index, message in enumerate(history, start=1)
-        ]
         noun = "message" if len(history) == 1 else "messages"
         header = f"Session history ({len(history)} {noun})"
-        return CommandResult("\n\n".join([header, *messages]))
+        return CommandResult(
+            "\n\n".join([header, self.format_history(history)])
+        )
+
+    def format_history(
+        self,
+        history: list[dict[str, Any]],
+        *,
+        start_index: int = 1,
+    ) -> str:
+        messages = [
+            self._format_message(index, message)
+            for index, message in enumerate(history, start=start_index)
+        ]
+        return "\n\n".join(messages)
 
     def _format_message(self, index: int, message: dict[str, Any]) -> str:
         role = str(message.get("role", "unknown")).upper()

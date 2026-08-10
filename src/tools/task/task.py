@@ -159,7 +159,6 @@ class TaskManager(BaseTool[TaskArgs]):
         task.owner = owner
         task.status = "in_progress"
         self.save_task(task)
-        print(f"  \033[36m[claim] {task.subject} → in_progress (owner: {owner})\033[0m")
         return f"Claimed {task.id} ({task.subject})"
 
     def complete_task(self, task_id: str) -> str:
@@ -177,12 +176,10 @@ class TaskManager(BaseTool[TaskArgs]):
             and candidate.blockedBy
             and self.can_start(candidate.id)
         ]
-        print(f"  \033[32m[complete] {task.subject} ✓\033[0m")
         message = f"Completed {task.id} ({task.subject})"
 
         if unblocked:
             message += f"\nUnblocked: {', '.join(unblocked)}"
-            print(f"  \033[33m[unblocked] {', '.join(unblocked)}\033[0m")
 
         return message
 

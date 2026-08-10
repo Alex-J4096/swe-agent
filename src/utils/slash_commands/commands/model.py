@@ -29,6 +29,11 @@ class ModelCommand(BaseCommand):
             return CommandResult("Model switch cancelled.")
 
         context.session.model = selected
+        if context.session_store is not None:
+            context.session_store.save(
+                context.session,
+                workdir=context.workdir,
+            )
         return CommandResult(f"Model switched to: {selected}")
 
     def _select_model(self, model_ids: list[str], current_model: str) -> str | None:

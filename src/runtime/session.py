@@ -11,3 +11,4 @@ class Session:
     tool_state: dict[str, Any] = field(default_factory=dict)
     approved_command_prefixes: set[tuple[str, ...]] = field(default_factory=set)
     running: bool = True
+    provider_id: str | None = None

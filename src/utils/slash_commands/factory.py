@@ -4,6 +4,10 @@ from src.utils.slash_commands.commands.compact import CompactCommand
 from src.utils.slash_commands.commands.debug import DebugCommand
 from src.utils.slash_commands.commands.help import HelpCommand
 from src.utils.slash_commands.commands.model import ModelCommand
+from src.utils.slash_commands.commands.new import NewSessionCommand
+from src.utils.slash_commands.commands.resume import ResumeCommand
+from src.utils.slash_commands.commands.sessions import SessionsCommand
+from src.utils.slash_commands.commands.status import StatusCommand
 
 
 def create_command_registry():
@@ -12,6 +16,10 @@ def create_command_registry():
         CompactCommand(),
         DebugCommand(),
         ModelCommand(),
+        SessionsCommand(),
+        StatusCommand(),
+        ResumeCommand(),
+        NewSessionCommand(),
     ]
     commands.insert(0, HelpCommand(commands))
     return CommandRegistry(commands=commands)

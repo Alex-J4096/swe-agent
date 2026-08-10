@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import patch
 
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
+
 from main import prepare_user_input
+from src.utils.slash_commands.factory import create_command_registry
 from src.utils.slash_commands.factory import create_command_registry
 
 
@@ -41,7 +45,14 @@ class HelpCommandTests(unittest.TestCase):
         self.assertIsNone(result.message)
         display.assert_called_once()
         help_text = display.call_args.args[0]
-        for usage in ("/help", "/clear", "/compact", "/debug", "/model"):
+        for usage in (
+            "/help",
+            "/clear",
+            "/compact",
+            "/debug",
+            "/model",
+            "/status",
+        ):
             self.assertIn(usage, help_text)
 
     @patch("src.utils.slash_commands.commands.help.print_formatted_text")
@@ -52,6 +63,58 @@ class HelpCommandTests(unittest.TestCase):
 
         self.assertIsNone(result.message)
         display.assert_called_once_with("Usage: /help")
+
+
+class SlashCommandCompletionTests(unittest.TestCase):
+    def test_slash_opens_all_available_commands(self):
+        registry = create_command_registry()
+
+        completions = list(
+            registry.completer().get_completions(
+                Document("/"),
+                CompleteEvent(),
+            )
+        )
+
+        names = [completion.text for completion in completions]
+        self.assertEqual(
+            names,
+            [
+                "/help",
+                "/clear",
+                "/compact",
+                "/debug",
+                "/model",
+                "/sessions",
+                "/status",
+                "/resume",
+                "/new",
+            ],
+        )
+
+    def test_partial_slash_command_is_filtered(self):
+        registry = create_command_registry()
+
+        completions = list(
+            registry.completer().get_completions(
+                Document("/mo"),
+                CompleteEvent(),
+            )
+        )
+
+        self.assertEqual([completion.text for completion in completions], ["/model"])
+
+    def test_completion_is_disabled_after_the_first_token(self):
+        registry = create_command_registry()
+
+        completions = list(
+            registry.completer().get_completions(
+                Document("/model "),
+                CompleteEvent(),
+            )
+        )
+
+        self.assertEqual(completions, [])
 
 
 if __name__ == "__main__":

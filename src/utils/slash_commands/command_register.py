@@ -30,3 +30,16 @@ class CommandRegistry:
             return CommandResult(f"Unknown command: {line}, /help for help.")
 
         return command.execute(parts[1:], context)
+
+    def completer(self):
+        """Return a prompt-toolkit completer for the canonical commands."""
+        from src.utils.slash_commands.completer import SlashCommandCompleter
+
+        commands: list[BaseCommand] = []
+        seen: set[str] = set()
+        for command in self.commands.values():
+            if command.name in seen:
+                continue
+            seen.add(command.name)
+            commands.append(command)
+        return SlashCommandCompleter(commands)

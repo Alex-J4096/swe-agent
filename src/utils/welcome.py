@@ -1,8 +1,5 @@
 from pathlib import Path
 
-from prompt_toolkit import print_formatted_text
-from prompt_toolkit.formatted_text import ANSI
-
 from src.runtime.session import Session
 
 
@@ -41,21 +38,12 @@ def render_welcome(session: Session, workdir: Path) -> str:
     )
 
 
-def print_welcome(session: Session, workdir: Path) -> None:
-    """Print the startup panel, with a blue border in capable terminals."""
+def print_welcome(session: Session, workdir: Path, renderer=None) -> None:
+    """Print the startup panel through the shared terminal renderer."""
+    if renderer is None:
+        from src.ui.console import ConsoleRenderer
+
+        renderer = ConsoleRenderer()
+
     rendered = render_welcome(session, workdir)
-    lines = rendered.splitlines()
-    colored_lines = []
-
-    for index, line in enumerate(lines):
-        if index in (0, len(lines) - 1):
-            colored_lines.append(f"\033[94m{line}\033[0m")
-            continue
-
-        left, content, right = line[0], line[1:-1], line[-1]
-        colored_lines.append(
-            f"\033[94m{left}\033[0m{content}"
-            f"\033[94m{right}\033[0m"
-        )
-
-    print_formatted_text(ANSI("\n".join(colored_lines)))
+    renderer.show_welcome(rendered)

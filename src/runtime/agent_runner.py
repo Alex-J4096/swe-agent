@@ -24,6 +24,7 @@ from src.tools.todo_manager.todo_manager import (
     render_todo_list,
 )
 from src.tools.toolset import ToolSet
+from src.ui.console import ConsoleRenderer
 
 
 CONTINUATION_PROMPT = (
@@ -67,6 +68,7 @@ class AgentRunner:
         max_tool_iterations: int = 10,
         todo_reminder_interval: int = 3,
         max_history_messages: int = 50,
+        renderer: ConsoleRenderer | None = None,
     ) -> None:
         if todo_reminder_interval < 1:
             raise ValueError("todo_reminder_interval must be at least 1")
@@ -79,6 +81,7 @@ class AgentRunner:
         self.max_tool_iterations = max_tool_iterations
         self.todo_reminder_interval = todo_reminder_interval
         self.max_history_messages = max_history_messages
+        self.renderer = renderer or ConsoleRenderer()
 
     def run(
         self,
@@ -598,9 +601,12 @@ class AgentRunner:
         suffix = f" ({reason})" if reason else ""
         scope_suffix = f" [{scope}]" if scope else ""
         decision = "Allowed" if allowed else "Denied"
-        print(
-            f"  {'✓' if allowed else '✗'} {decision} {tool_name}: "
-            f"{target}{scope_suffix}{suffix}"
+        self.renderer.permission_decision(
+            tool_name,
+            target,
+            allowed=allowed,
+            scope=scope,
+            reason=reason,
         )
 
     def _ask_user(
@@ -610,7 +616,7 @@ class AgentRunner:
         _reason: str,
         session: Session | None = None,
     ) -> bool:
-        question = f"  ? Allow {tool_name}? [y] once / [a] session / [n] deny "
+        question = self.renderer.permission_question(tool_name)
 
         try:
             answer = input(question).strip().lower()
@@ -627,7 +633,7 @@ class AgentRunner:
                     session.approved_command_prefixes.add(prefix)
         if sys.stdin.isatty() and sys.stdout.isatty():
             # input() has moved to the next line; erase its prompt and answer.
-            print("\033[1A\r\033[2K", end="")
+            self.renderer.clear_input_line()
 
         self._print_permission_decision(
             tool_name,

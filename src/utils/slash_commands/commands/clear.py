@@ -16,6 +16,14 @@ class ClearCommand(BaseCommand):
         tool_state_count = len(context.session.tool_state)
         context.session.history.clear()
         context.session.tool_state.clear()
+        if (
+            context.session_store is not None
+            and context.session_store.exists(context.session.session_id)
+        ):
+            context.session_store.save(
+                context.session,
+                workdir=context.workdir,
+            )
 
         return CommandResult(
             message=(
