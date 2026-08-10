@@ -1,5 +1,7 @@
 # SWE Agent Architecture
 
+完整架构文档见 `docs/ARCHITECTURE.md`。本文保留 Permission 机制的专题说明；当两者出现差异时，应以完整架构文档和当前实现为准。
+
 本文档记录当前系统中已经实现的关键架构设计。现阶段重点描述工具调用的
 permission 机制。
 
@@ -65,8 +67,8 @@ tuple[str | None, bool]
 }
 ```
 
-这保证每个 assistant `tool_call` 都有匹配的 tool 结果。模型可以理解工具未执行的
-原因；但 permission 拒绝不会继续进入普通工具循环。
+这保证每个已经处理的 assistant `tool_call` 都有匹配的 tool 结果。模型可以理解工具
+未执行的原因；但 permission 拒绝不会继续进入普通工具循环。
 
 如果拒绝来自硬拒绝规则，或用户在确认中选择拒绝，当前 `AgentRunner.run()` 会在
 追加拒绝结果后立即停止本次工具循环，不再执行同一 assistant 响应中的后续工具调用，
@@ -98,7 +100,7 @@ assistant(tool-free summary)
 
 如果同一个 assistant 消息包含多个工具调用，执行到第一个被拒绝的调用时立即停止，
 后续调用不会执行，也不会逐个询问。已经成功执行的前置调用及其 tool 结果会保留在
-历史中。
+历史中；当前实现不会为跳过的后续调用补充 cancelled tool 结果。
 
 ### Bash 权限分层
 
@@ -186,7 +188,7 @@ pytest                 -> ("pytest",)
 
 会话授权具有以下边界：
 
-- 只存在于当前 `Session`，不会持久化到下一次启动。
+- 只属于当前逻辑 `Session`，由 `SessionStore` 持久化；恢复同一 Session 后仍然有效。
 - 只匹配完全相同的 token 前缀，不做字符串前缀匹配。
 - 必须先通过硬拒绝检查。
 - 即使命中会话授权，仍必须通过 workspace 和 shell 操作符检查。
