@@ -1,5 +1,4 @@
 import json
-import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -9,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolContext
+from src.tools.task.store import JsonFileStore
 
 
 DEFAULT_TASK_DIR = Path(".swe-agent/tasks")
@@ -52,6 +52,7 @@ class TaskManager(BaseTool[TaskArgs]):
 
     def __init__(self, task_dir: Path | None = None) -> None:
         self.task_dir = (task_dir or DEFAULT_TASK_DIR).resolve()
+        self._store = JsonFileStore(self.task_dir)
 
     @staticmethod
     def _new_task_id() -> str:
@@ -104,22 +105,13 @@ class TaskManager(BaseTool[TaskArgs]):
 
     def save_task(self, task: Task) -> None:
         self._validate_task(task)
-        self.task_dir.mkdir(parents=True, exist_ok=True)
         task_path = self._get_task_path(task.id)
-        temporary_path = self.task_dir / f".{task.id}.{uuid4().hex}.tmp"
-        try:
-            temporary_path.write_text(
-                json.dumps(asdict(task), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(temporary_path, task_path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
+        self._store.save(task_path.name, asdict(task))
 
     def load_task(self, task_id: str) -> Task:
         task_path = self._get_task_path(task_id)
         try:
-            data = json.loads(task_path.read_text(encoding="utf-8"))
+            data = self._store.load(task_path.name)
         except FileNotFoundError as exc:
             raise ValueError(f"Task not found: {task_id}") from exc
         if not isinstance(data, dict):
@@ -136,7 +128,7 @@ class TaskManager(BaseTool[TaskArgs]):
             return []
         return [
             self.load_task(path.stem)
-            for path in sorted(self.task_dir.glob("task_*.json"))
+            for path in self._store.list("task_*.json")
         ]
 
     def can_start(self, task_id: str) -> bool:

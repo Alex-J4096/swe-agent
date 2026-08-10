@@ -179,3 +179,255 @@ sequenceDiagram
 - 后台提取或整理失败不会影响当前回答或下一轮用户输入。
 - `MemoryWorker` 只有一个工作线程，保证提取、整理和文件删除按轮次顺序执行。
 - `/clear` 等 slash command 不会触发 Memory 提取；只有执行过 `AgentRunner.run()` 的普通用户请求会在结束时提交后台任务。
+
+## Task 系统
+
+Task 系统用于把“任务记录管理”和“慢任务执行”分开：
+
+- `task_manager` 负责快速、同步的任务管理操作，例如创建任务、查询任务、领取任务和完成任务。
+- `background_task` 负责提交可能阻塞主循环的慢操作，例如模型调用、批量处理、长时间 I/O 或子代理任务。
+
+这里的 `Task` 是任务记录和依赖关系，`BackgroundTask` 是带有执行处理器的异步任务。两者使用相同的任务 ID 格式，但保存在不同目录中，不直接共享状态文件。
+
+### 代码结构
+
+```text
+src/tools/task/
+├── task.py              # Task、TaskArgs、TaskManager
+├── background_task.py   # BackgroundTask、BackgroundTaskManager、线程池 worker
+└── store.py             # 原子 JSON 写入和线程安全文件存储
+```
+
+工具注册在 `src/tools/toolset.py`：
+
+```text
+ToolSet
+├── task_manager
+└── background_task
+```
+
+`AgentRunner` 通过 `ToolSet.background_task_manager` 访问后台任务管理器，并在每次模型请求前检查完成事件。
+
+### 快速任务模型
+
+快速任务的数据结构如下：
+
+```python
+Task(
+    id="task_<32 位小写十六进制字符>",
+    subject="任务标题",
+    description="任务描述",
+    status="pending | in_progress | completed",
+    owner=None,
+    blockedBy=[],
+)
+```
+
+任务 ID 使用 UUID4 的随机部分生成：
+
+```text
+task_ + uuid4().hex
+```
+
+这种 ID 具有较低的碰撞概率，并且可以安全地作为文件名。它不表达创建时间，因此列表排序是字典序，而不是创建时间顺序。
+
+快速任务的工作流为：
+
+```mermaid
+flowchart LR
+    A[LLM 调用 task_manager] --> B{action}
+    B -->|create| C[生成 UUID4 ID]
+    C --> D[写入 pending 任务]
+    B -->|list| E[读取任务文件]
+    B -->|claim| F{依赖是否全部 completed}
+    F -->|否| G[返回 Blocked]
+    F -->|是| H[写入 in_progress]
+    B -->|complete| I[写入 completed]
+    I --> J[检查被解除阻塞的任务]
+```
+
+`blockedBy` 中的每个任务 ID 都必须合法，并且只有所有依赖任务为 `completed` 时，当前任务才能被领取。当前实现会对 `blockedBy` 去重，但不会自动创建不存在的依赖任务。
+
+### 后台任务模型
+
+后台任务除了任务描述，还保存执行器信息和结果：
+
+```python
+BackgroundTask(
+    id="task_<32 位小写十六进制字符>",
+    subject="慢任务标题",
+    description="慢任务描述",
+    handler="registered_handler_name",
+    payload={},
+    session_id="所属会话 ID",
+    status="pending | in_progress | completed | failed | cancelled",
+    result=None,
+    error=None,
+    event_id=None,
+    created_at=...,
+    started_at=None,
+    finished_at=None,
+    acknowledged_at=None,
+)
+```
+
+`handler` 保存的是处理器名称，不保存 Python callable。处理器需要由宿主程序注册：
+
+```python
+manager = ToolSet().background_task_manager
+manager.register_handler(
+    "slow_operation",
+    lambda payload: do_slow_operation(payload),
+)
+```
+
+这样任务文件中只保存 JSON 可序列化的 `payload`，避免把不可持久化的函数对象写入磁盘。默认 `ToolSet` 会注册 `background_task`，但默认没有业务 handler；实际应用需要根据自身能力显式注册 handler。
+
+### 后台提交与执行流程
+
+```mermaid
+sequenceDiagram
+    participant LLM
+    participant Runner as AgentRunner
+    participant Tool as BackgroundTaskManager
+    participant Store as BackgroundTaskStore
+    participant Worker as ThreadPoolExecutor
+
+    LLM->>Runner: 调用 background_task.submit
+    Runner->>Tool: dispatch(arguments, session_id)
+    Tool->>Store: 保存 pending 任务
+    Tool->>Worker: submit(task_id)
+    Tool-->>Runner: 立即返回 task_id 和 pending 状态
+    Runner-->>LLM: 继续当前对话或结束本轮
+    Worker->>Store: 写入 in_progress
+    Worker->>Worker: 执行已注册 handler(payload)
+    alt 执行成功
+        Worker->>Store: 写入 completed、result、event_id
+    else handler 抛出异常
+        Worker->>Store: 写入 failed、error、event_id
+    end
+```
+
+当前 worker 使用 `ThreadPoolExecutor`，默认最多 4 个工作线程。它适合网络请求、模型调用和文件 I/O 等 I/O 密集型操作；CPU 密集型任务如果需要并行，应在后续改用进程池或专用执行服务。
+
+后台任务支持以下工具操作：
+
+| action | 作用 | 是否需要 task |
+| --- | --- | --- |
+| `submit` | 创建并提交后台任务 | 是，需要 `subject`、`handler`、`payload` |
+| `get` | 查询单个任务 | 是，需要 `id` |
+| `list` | 查询全部后台任务 | 否 |
+| `cancel` | 取消尚未开始的任务 | 是，需要 `id` |
+| `retry` | 重新提交失败或已取消的任务 | 是，需要 `id` |
+
+当前实现只允许取消 `pending` 任务。任务一旦进入 `in_progress`，不能被强制终止；如果需要可取消的慢操作，handler 应自行读取取消信号，这部分协议尚未加入当前版本。
+
+### 完成事件注入
+
+后台 worker 不直接修改 `Session.history`，而是把任务写成终态，并生成唯一的 `event_id`。完成状态包括：
+
+```text
+completed
+failed
+cancelled
+```
+
+每个后台任务提交时记录当前 `session_id`。`AgentRunner` 每轮开始、发起下一次模型请求之前执行以下流程：
+
+1. 读取当前 session 尚未确认的终态后台任务。
+2. 使用 `event_id` 去重。
+3. 将任务结果封装为外部事件消息追加到 `session.history`。
+4. 调用 `acknowledge_event()` 写入 `acknowledged_at`。
+5. 将已注入的 event ID 保存到 `session.tool_state["background_task_event_ids"]`。
+
+注入的消息形态如下：
+
+```text
+[Background task event]
+A background task assigned to this session reached a terminal state.
+{"task_id": "...", "subject": "...", "status": "completed", "result": "...", "error": null}
+```
+
+消息使用 `user` role，是因为它代表运行时产生的外部事件，而不是对历史 tool call 的重复响应。消息正文明确要求模型把它当作外部事件处理，而不是新的用户指令。
+
+```mermaid
+sequenceDiagram
+    participant Worker
+    participant Store
+    participant Runner as AgentRunner
+    participant Session
+    participant LLM
+
+    Worker->>Store: 保存终态 + event_id
+    Runner->>Store: pending_events(session_id)
+    Store-->>Runner: 未确认的 completed/failed/cancelled 事件
+    Runner->>Session: 追加 Background task event
+    Runner->>Store: acknowledge_event(task_id)
+    Runner->>LLM: 携带事件的下一轮 messages
+    LLM-->>Runner: 处理结果或继续调用工具
+```
+
+如果同一个任务被 `retry`，会清除旧的确认状态；新的终态会生成新的 `event_id`，因此重试结果不会因为旧任务 ID 已经注入过而被丢弃。
+
+### AgentRunner 的结束行为
+
+`AgentRunner.run()` 仍然是同步的一轮执行。后台任务提交后，如果模型没有继续调用工具，本轮会结束；如果此时仍有属于当前 session 的 `pending` 或 `in_progress` 任务，返回值会设置：
+
+```python
+AgentRunResult(
+    ok=True,
+    waiting_for_background=True,
+)
+```
+
+这表示上层运行时需要保留该 session，并在后台任务完成后再次调用 `AgentRunner.run()`。下一次调用的第一步就是完成事件注入。
+
+`BackgroundTaskManager` 也支持可选的 `on_task_finished` 回调。宿主程序可以使用这个回调唤醒对应的 session：
+
+```text
+worker 完成
+    ↓
+on_task_finished(task)
+    ↓
+宿主根据 task.session_id 找到 session
+    ↓
+重新调用 AgentRunner.run()
+```
+
+当前 Task 模块本身不会启动全局 session scheduler，也不会在后台线程中直接发起新的 LLM 请求。这样可以避免同一个 session 被多个线程同时修改历史或并发调用模型。
+
+### 持久化与一致性
+
+任务分别保存于当前工作区：
+
+```text
+.swe-agent/
+├── tasks/
+│   └── task_<id>.json
+└── background_tasks/
+    └── task_<id>.json
+```
+
+`JsonFileStore` 提供两项基础能力：
+
+- 先写入随机临时文件，再使用 `os.replace()` 原子替换目标文件，避免读到半写入内容。
+- 在同一个 manager 实例内使用 `RLock`，保护线程内的读写操作。
+
+文件存储只保证单个 manager 实例内的线程安全。当前版本还没有跨进程锁或数据库事务，因此多个进程同时操作同一任务目录时，仍可能发生状态竞争。`TaskManager.claim_task()` 也还没有跨进程 compare-and-swap 保护。
+
+### 快速任务与后台任务的选择
+
+当前版本不额外调用一次 LLM 来判断快慢，而是通过工具能力和工具描述让 LLM 选择：
+
+- 只涉及任务元数据、依赖检查和状态读写：使用 `task_manager`。
+- 涉及模型调用、子代理、网络请求、轮询、批量处理或耗时不确定：使用 `background_task`。
+
+后续如果需要统一入口，可以在工具层增加 `TaskRouter`，由 LLM 提供 `mode=auto/foreground/background`，再由运行时根据 handler 元数据和启发式规则做最终裁决。运行时规则应当覆盖明显的慢任务，不能完全依赖 LLM 对耗时的估计。
+
+### 当前限制与后续演进
+
+- handler 注册表目前只存在于进程内；进程重启后，已经提交但尚未完成的后台任务不会自动恢复执行。
+- 目前使用线程池，尚未提供进度百分比、超时、强制取消和持久化重试次数。
+- 完成事件通过扫描后台任务文件发现，任务规模较大时应改为持久化事件表或事件日志。
+- `owner` 当前主要用于任务元数据记录，完成任务时还没有强制校验 owner。
+- 如果需要多进程 worker、可靠恢复和严格任务领取语义，应迁移到带事务和锁机制的数据库或队列系统。

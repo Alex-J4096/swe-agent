@@ -11,6 +11,7 @@ from src.tools.file.read_file import ReadFileTool
 from src.tools.file.write_file import WriteFileTool
 from src.tools.shell.bash import BashTool
 from src.tools.skill.load_skill import LoadSkill
+from src.tools.task.background_task import BackgroundTaskManager
 from src.tools.task.task import TaskManager
 from src.tools.todo_manager.todo_manager import TodoManager
 
@@ -51,6 +52,7 @@ class ToolSet:
                 EditFileTool(),
                 TodoManager(),
                 TaskManager(),
+                BackgroundTaskManager(),
                 LoadSkill(self.skill_loader),
             ]
         )
@@ -63,6 +65,11 @@ class ToolSet:
             for name, tool in self.registry.items()
             if name not in self.excluded_tools
         }
+
+    @property
+    def background_task_manager(self) -> BackgroundTaskManager | None:
+        tool = self.registry.get("background_task")
+        return tool if isinstance(tool, BackgroundTaskManager) else None
 
     # 动态注册工具
     def register(self, tool: BaseTool[Any]) -> None:

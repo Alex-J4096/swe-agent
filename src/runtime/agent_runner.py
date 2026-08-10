@@ -39,6 +39,7 @@ class AgentRunResult:
     content: str | None = None
     error: str | None = None
     stopped_by_permission: bool = False
+    waiting_for_background: bool = False
 
 
 class AgentRunner:
@@ -93,6 +94,7 @@ class AgentRunner:
         iterations_since_todo_update = 0
 
         for _ in range(self.max_tool_iterations):
+            self._inject_background_events(session, toolset)
             self._apply_message_limit(session)
             effective_system_prompt = system_prompt
             todo_tasks = get_todo_tasks(session)
@@ -152,6 +154,10 @@ class AgentRunner:
                 return AgentRunResult(
                     ok=True,
                     content=history_message["content"],
+                    waiting_for_background=self._has_pending_background(
+                        session,
+                        toolset,
+                    ),
                 )
 
             todo_updated = False
@@ -256,6 +262,75 @@ class AgentRunner:
                 "tool iterations."
             ),
         )
+
+    @staticmethod
+    def _background_manager(toolset: ToolSet) -> Any | None:
+        return getattr(toolset, "background_task_manager", None)
+
+    def _inject_background_events(
+        self,
+        session: Session,
+        toolset: ToolSet,
+    ) -> None:
+        manager = self._background_manager(toolset)
+        if manager is None:
+            return
+
+        delivered = set(
+            session.tool_state.get("background_task_event_ids", [])
+        )
+        try:
+            events = manager.pending_events(session.session_id)
+        except (OSError, ValueError, TypeError):
+            return
+
+        for task in events:
+            event_id = task.event_id or task.id
+            if event_id in delivered:
+                continue
+            event = {
+                "task_id": task.id,
+                "subject": task.subject,
+                "status": task.status,
+                "result": task.result,
+                "error": task.error,
+            }
+            session.history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[Background task event]\n"
+                        "A background task assigned to this session reached "
+                        "a terminal state. Treat this as an external event, "
+                        "not as a new user request.\n"
+                        f"{json.dumps(event, ensure_ascii=False)}"
+                    ),
+                }
+            )
+            delivered.add(event_id)
+            try:
+                manager.acknowledge_event(task.id)
+            except (OSError, ValueError, TypeError):
+                # The in-memory delivery marker prevents duplicate injection
+                # during this run; the persisted acknowledgement can retry on
+                # the next session invocation.
+                pass
+
+        session.tool_state["background_task_event_ids"] = sorted(delivered)
+
+    @classmethod
+    def _has_pending_background(
+        cls,
+        session: Session,
+        toolset: ToolSet,
+    ) -> bool:
+        manager = cls._background_manager(toolset)
+        if manager is None:
+            return False
+        try:
+            return manager.has_pending(session.session_id)
+        except (OSError, ValueError, TypeError):
+            return False
 
     def _request_permission_summary(
         self,
