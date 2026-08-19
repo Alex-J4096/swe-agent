@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
@@ -12,6 +13,10 @@ ArgsT = TypeVar("ArgsT", bound=BaseModel)
 @dataclass(frozen=True)
 class ToolContext:
     session: Session
+    team_runtime: Any | None = None
+    agent_id: str | None = None
+    task_id: str | None = None
+    workspace_root: Path | None = None
 
 
 class BaseTool(Generic[ArgsT]):

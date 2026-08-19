@@ -30,10 +30,11 @@ class EditFileTool(BaseTool[EditFileArgs]):
         args: EditFileArgs,
         context: ToolContext,
     ) -> dict[str, Any]:
-        file_path = (self.project_root / args.file_path).resolve()
+        project_root = (getattr(context, "workspace_root", None) or self.project_root).resolve()
+        file_path = (project_root / args.file_path).resolve()
 
         try:
-            file_path.relative_to(self.project_root)
+            file_path.relative_to(project_root)
         except ValueError:
             return {
                 "ok": False,

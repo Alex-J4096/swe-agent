@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,9 @@ class ToolRegistry:
         if tool.name in self._tools:
             raise ValueError(f"Tool {tool.name} already registered")
         self._tools[tool.name] = tool
+
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
 
     def get(self, name: str) -> BaseTool[Any] | None:
         return self._tools.get(name)
@@ -75,6 +79,9 @@ class ToolSet:
     def register(self, tool: BaseTool[Any]) -> None:
         self.registry.register(tool)
 
+    def unregister(self, name: str) -> None:
+        self.registry.unregister(name)
+
     def view(self, *, exclude: Iterable[str] = ()) -> "ToolSet":
         return ToolSet(
             registry=self.registry,
@@ -101,6 +108,20 @@ class ToolSet:
                 "error": f"Tool not found: {name}",
             }
         try:
+            if context.team_runtime is not None:
+                try:
+                    raw_args = json.loads(arguments_json)
+                except (TypeError, json.JSONDecodeError):
+                    raw_args = {}
+                if not isinstance(raw_args, dict):
+                    raw_args = {}
+                denial = context.team_runtime.guard(name, raw_args, context)
+                if denial is not None:
+                    return {
+                        "ok": False,
+                        "code": "team_policy_denied",
+                        "error": denial,
+                    }
             args = tool.args_model.model_validate_json(arguments_json)
             # print(f"\033[46m [DEBUG]Ran\033[46m {tool.name}: {args}")
             return tool.run(args, context)

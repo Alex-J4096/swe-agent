@@ -10,5 +10,6 @@ class Session:
     history: list[dict[str, Any]] = field(default_factory=list)
     tool_state: dict[str, Any] = field(default_factory=dict)
     approved_command_prefixes: set[tuple[str, ...]] = field(default_factory=set)
+    memory_enabled: bool = True
     running: bool = True
     provider_id: str | None = None

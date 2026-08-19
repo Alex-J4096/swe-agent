@@ -80,7 +80,7 @@ erDiagram
 - `ProviderCredential` 描述认证材料及选择状态。
 - `Session.model` 和 `Session.provider_id` 记录某次逻辑对话实际使用的组合。
 
-数据库结构支持多个 Provider、多个模型和多份凭据，但当前 `main.py` 在启动时固定装配 SiliconFlow 和一个默认模型，尚未提供完整的多 Provider 选择界面。
+数据库结构支持多个 Provider、多个模型和多份凭据。`main.py` 会注册 SiliconFlow、OpenAI 和 OpenCode Go 三个内置 Provider，启动默认使用 SiliconFlow；`/model` 提供多 Provider 选择流程。
 
 ### 启动装配流程
 
@@ -91,8 +91,8 @@ erDiagram
 3. 从数据库选择该 Provider 的默认或最近更新模型。
 4. 从数据库选择 active 的默认或最近更新凭据。
 5. 如果没有可用凭据，从 `api_key_env` 指定的环境变量读取 token，并写成默认凭据。
-6. 如果仍然没有凭据，显示配置错误并退出。
-7. 使用 profile、credential 构造 `Provider` 和 OpenAI 客户端。
+6. 如果仍然没有凭据，以隐藏输入方式询问 API Key；用户取消输入后仍初始化 Agent，但后续请求返回 API Key 未配置错误。
+7. 使用 profile、credential（可能为空）构造 `Provider` 和 OpenAI 客户端。
 8. 使用默认模型创建当前 Session。
 
 ```mermaid
@@ -111,7 +111,13 @@ sequenceDiagram
             Main->>DB: persist default credential
             DB-->>Main: credential
         else 环境变量不存在
-            Main-->>Main: show error and exit
+            Main->>Main: prompt for API key (hidden)
+            alt 用户输入 key
+                Main->>DB: persist default credential
+            else 用户取消
+                Main->>Provider: initialize without credential
+                Main-->>Main: continue agent initialization
+            end
         end
     end
     Main->>Provider: name + base_url + token
@@ -131,13 +137,14 @@ else:
     OpenAI(base_url=base_url, api_key=api_key)
 ```
 
-内置 `PROVIDER_BASE_URLS` 可以按供应商名称补充默认端点。当前没有供应商专用 adapter，所有 Provider 都必须兼容 OpenAI 的 models 和 chat completions API。
+内置 `PROVIDER_BASE_URLS` 包含 SiliconFlow、OpenAI 和 OpenCode Go 的默认端点。当前没有供应商专用 adapter，所有 Provider 都必须兼容 OpenAI 的 models 和 chat completions API。
 
-`list_model_ids()` 调用远端 models API，对非空模型 ID 去重并排序。`/model` 使用这份列表让用户选择模型，然后只更新并保存当前 `Session.model`：
+`list_model_ids()` 调用远端 models API，对非空模型 ID 去重并排序。`/model` 先选择 Provider，再使用该 Provider 的列表让用户选择模型；若没有 active credential，则依次检查环境变量并以隐藏输入方式询问 API Key。切换成功后会更新并保存当前 `Session.provider_id` 和 `Session.model`：
 
 - 不修改全局 `ModelProfile.is_default`。
 - 后续 AgentRunner 请求立即使用新模型。
 - Memory 通过 `model_getter` 动态读取当前 Session 模型。
+- Provider 客户端在原对象上替换，因此 AgentRunner、Memory、Team 和 Subagent 会继续使用新 Provider。
 - Subagent 默认继承发起委派的父 Session 模型。
 
 `ModelProfile.config` 当前可以持久化任意 JSON，但尚未合并到 chat completion 请求中；temperature 等配置字段目前只是保留数据。
@@ -157,10 +164,11 @@ else:
 
 ### 数据库迁移和一致性
 
-`AppDatabase` 使用 `PRAGMA user_version` 管理 schema，当前版本为 2：
+`AppDatabase` 使用 `PRAGMA user_version` 管理 schema，当前版本为 3：
 
 - v1：Provider、Model、Session、消息和 Session 状态。
 - v2：Provider Credential。
+- v3：Session 的 `memory_enabled` 开关。
 
 打开数据库时：
 
@@ -202,7 +210,7 @@ flowchart TD
     I --> A
 ```
 
-重试是同步等待，会阻塞当前 Runner 或后台 Memory worker 所在线程。连接错误、超时和普通 5xx，包括 500、502、503，当前不会自动重试；现有策略有意保持较窄的可重试状态集合。
+重试是同步等待，会阻塞当前 Runner 或发起请求的后台 Memory worker 所在线程，但不会阻塞主输入循环。连接错误、超时和普通 5xx，包括 500、502、503，当前不会自动重试；现有策略有意保持较窄的可重试状态集合。
 
 ### 不同调用点的失败语义
 
@@ -212,15 +220,15 @@ flowchart TD
 | --- | --- | --- |
 | AgentRunner 普通请求 | 是 | 返回 `AgentRunResult(ok=False)` |
 | Permission 拒绝总结 | 是 | 返回固定降级说明 |
-| Memory side-query / 提取 / 整理 | 是 | 返回空结果；相关 Memory 选择可降级为本地关键词匹配，不中断主循环 |
+| Memory 精筛 / 提取 / 整理 | 是 | 后台任务丢弃失败结果；当前请求保留本地关键词或上一轮缓存，不中断主循环 |
 | `/compact` 摘要 | 是 | 保留原 history 和 transcript，命令层最多尝试 3 次 |
-| `/model` 列模型 | 否 | 返回 `Failed to load models from provider` |
+| `/model` 列模型 | 否 | 返回 `Failed to load models from <provider>` |
 
 模型输出达到 token 上限不属于网络重试，由 AgentRunner 的截断恢复机制处理：先提高 `max_tokens` 重试，再进行有限 continuation。详见“AgentRunner / 输出截断恢复”。
 
 ### 当前限制与后续演进
 
-- 主程序仍硬编码单一 Provider 和初始默认模型，多 Provider schema 尚未形成完整产品流程。
+- Provider 切换依赖 OpenAI-compatible 的 models 和 chat completions 接口；不兼容这两个接口的供应商仍需要单独 adapter。
 - Provider 仅支持 OpenAI-compatible API，没有供应商能力探测或参数适配。
 - 数据库凭据是明文，应迁移到操作系统密钥存储或加密 envelope。
 - 凭据没有过期校验、refresh 和撤销流程。
@@ -793,6 +801,38 @@ Skill 或子任务文本都不能绕过 ToolSet 排除、Permission 硬拒绝和
 - 子 Agent 可以修改共享 workspace；需要更强隔离时应使用独立 worktree、容器或受限文件系统。
 - 应补充 Subagent 的隔离历史、递归阻断、权限授权不继承和失败传播测试。
 
+## 终端渲染与状态动画
+
+终端输出由 `src/ui/console.py` 中的 `ConsoleRenderer` 统一负责。模型、工具和权限逻辑只传递结构化结果，终端控制字符、颜色和状态动画由渲染层处理。
+
+### ThinkingIndicator
+
+`ThinkingIndicator` 使用一个 daemon 线程周期性重绘当前行：
+
+```text
+\r\033[2K  ⠋ Thinking
+```
+
+- `\r` 将光标移回行首。
+- `\033[2K` 清除整行，避免不同长度的状态文本残留。
+- `⠋` 等 Unicode frame 按固定间隔轮换。
+- `flush()` 保证动画立即显示。
+
+动画只有在 `output.isatty()` 为真时启用，因此不会污染管道、日志文件或测试中的 `StringIO` 输出。`start()` 可以在动画已经运行时更新状态文本，例如从 `Preparing` 更新为 `Thinking`；Runner 在模型请求的 `try/finally` 边界中调用 `stop()` 清除动画行。
+
+### 生命周期
+
+普通用户提交 Prompt 后，`main.py` 立即启动 `Preparing`，覆盖以下可能发生的本地准备工作：
+
+1. 保存用户消息到 SessionStore。
+2. 构建当前轮 SYSTEM。
+3. 执行本地 Memory 候选检索和缓存合并。
+4. 生成 Tool schema 并进入 Runner。
+
+`AgentRunner` 在实际模型请求前将状态更新为 `Thinking`。请求返回、异常或截断恢复完成后，Runner 停止动画；工具调用和最终 assistant 内容会在动画清理后输出，避免多个线程同时改写可见的终端行。
+
+动画表示“当前正在等待或处理请求”，不表示模型真实的内部思考内容。未来接入流式输出时，应在收到第一个文本 chunk 后停止动画，再由 Renderer 增量输出 assistant 内容。
+
 ## AgentRunner
 
 `AgentRunner` 是单轮 Agent 执行的控制中枢。它不负责读取终端输入或持久化 Session，而是接收已经准备好的 `Session`、`ToolSet` 和 SYSTEM prompt，在同步循环中完成模型请求、工具调用、权限检查和结果回填。
@@ -1012,6 +1052,7 @@ Session(
     history=[],
     tool_state={},
     approved_command_prefixes=set(),
+    memory_enabled=True,
     running=True,
     provider_id=None,
 )
@@ -1027,6 +1068,7 @@ Session(
 | `history` | user、assistant 和 tool 消息链 | 是 |
 | `tool_state` | Todo、后台事件去重等工具运行状态 | 是 |
 | `approved_command_prefixes` | Session 级 Bash 授权 | 是 |
+| `memory_enabled` | 是否为当前 Session 读取、维护和精筛 Memory | 是 |
 | `running` | 主输入循环是否继续 | 否，加载时重置为 `True` |
 
 ### SQLite 持久化模型
@@ -1046,7 +1088,8 @@ session_messages
 session_state
 ├── session_id
 ├── tool_state_json
-└── approved_prefixes_json
+├── approved_prefixes_json
+└── memory_enabled
 ```
 
 `payload_json` 保存完整消息对象，因此 assistant 的 `tool_calls` 和 tool 的 `tool_call_id` 不会因为拆列而丢失；`role` 和 `content` 列主要用于查询和展示。
@@ -1056,7 +1099,7 @@ session_state
 1. upsert Session 元数据并更新 `updated_at`。
 2. 删除该 Session 现有消息行。
 3. 按当前 `history` 顺序重新写入全部消息。
-4. upsert `tool_state` 和命令授权。
+4. upsert `tool_state`、命令授权和 `memory_enabled`。
 
 这种策略简单地保证内存快照与数据库一致，但写入成本随历史长度线性增长，不适合超长会话或高频并发保存。SQLite 开启 foreign key、5 秒 busy timeout 和 WAL；当前仍是单进程本地状态库设计。
 
@@ -1088,6 +1131,7 @@ sequenceDiagram
 - `/new [title]`：创建新 Session，并把共享的当前 Session 对象切换到新 ID 和新状态。
 - `/resume <id>`：从数据库加载完整历史、工具状态和命令授权，再覆盖当前 Session 对象；保持其他组件持有的对象引用有效。
 - `/clear`：清空 `history` 和 `tool_state`；如果 Session 已持久化则立即保存。它不会更换 Session ID，也不会清空命令授权。
+- `/memory on|off|status`：开启、关闭或查看当前 Session 的 Memory。开关会持久化；关闭时跳过当前轮 Memory 注入、后台精筛和回合结束后的 Memory 抽取。
 - `/sessions`：按 `updated_at` 倒序列出 Session 摘要，不加载完整消息历史。
 
 Session 的 `workdir` 当前保存在数据库元数据和摘要中，但不是 `Session` dataclass 字段。恢复 Session 不会自动切换进程工作目录，实际工具边界仍由当前启动时的 workspace 决定。
@@ -1184,9 +1228,11 @@ flowchart LR
 
 Memory 用于跨轮次保存用户偏好、反馈、项目事实和外部引用。它由三部分组成：
 
-- `main.py`：在每次用户请求开始时装配 Memory 上下文，并在本轮结束后提交后台维护任务。
+- `main.py`：在每次用户请求开始时装配本地 Memory 候选和缓存上下文，并在本轮结束后提交后台维护与精筛任务。
 - `src/runtime/memory_worker.py`：负责异步调度提取和整理，不阻塞 Agent 主循环。
-- `src/infrastructure/memory.py`：负责 Memory 的检索、LLM side-query、提取、合并和文件持久化。
+- `src/runtime/memory_selection_worker.py`：负责 latest-wins 的后台 LLM 精筛。
+- `src/infrastructure/memory_selection_cache.py`：保存当前进程内可复用的精筛结果，并校验历史前缀和 Memory 版本。
+- `src/infrastructure/memory.py`：负责 Memory 的本地检索、候选描述、LLM 精筛、提取、合并和文件持久化。
 
 ### 存储格式
 
@@ -1224,7 +1270,7 @@ User prefers using tabs, not spaces, for indentation.
 memory_store = MemoryStore(
     workdir,
     client=provider.client,
-    model=MODEL,
+    model_getter=lambda: session.model,
 )
 ```
 
@@ -1232,7 +1278,7 @@ memory_store = MemoryStore(
 
 ### 每轮开始：加载 Memory
 
-Memory 通过两条路径进入当前轮上下文。
+Memory 通过两条路径进入当前轮上下文。Memory 默认开启，也可以通过 `/memory off` 对当前 Session 关闭。
 
 #### 路径一：索引常驻 SYSTEM
 
@@ -1246,15 +1292,16 @@ Memory 通过两条路径进入当前轮上下文。
 
 #### 路径二：相关 Memory 按需注入
 
-`load_memories(session.history)` 在本轮 Agent 执行前加载相关 Memory：
+当前请求不会等待 LLM 精筛，而是执行本地候选和缓存合并：
 
-1. `list_memory_files()` 只收集每条 Memory 的 `filename`、`name` 和 `description` 作为候选目录。
-2. 最近对话截取最后 4,000 个字符，与候选目录一起发送给 LLM side-query。
-3. side-query 只允许返回候选目录中的精确文件名，最多选择 5 条。
-4. `load_memories()` 读取选中文件的正文，并渲染为 `<memory>` 块。
-5. `main.py` 将这些块追加到当前轮的 `turn_system_prompt`，不写回 `session.history`。
+1. `select_relevant_memories(..., use_llm=False)` 读取 Memory 元数据，并通过 `name + description` 做关键词匹配；名称命中的权重高于描述。
+2. `MemorySelectionCache` 尝试读取上一轮已完成的精筛结果。
+3. 缓存只有在 `memory_revision` 一致，且缓存对应的历史是当前 `session.history` 前缀时才可复用。
+4. 当前问题的本地候选优先，再用缓存结果补足，最终最多注入 5 条 Memory。
+5. `load_memories_by_filenames()` 读取选中文件正文，并渲染为 `<memory>` 块。
+6. `main.py` 将这些块追加到当前轮的 `turn_system_prompt`，不写回 `session.history`。
 
-如果 API 请求失败、响应为空、JSON 无法解析，或者 LLM 没有返回有效文件名，`select_relevant_memories()` 会自动降级为本地关键词匹配。关键词只匹配 Memory 的 `name + description`，名称命中的权重高于描述。
+因此，首次遇到某类问题时即使后台精筛尚未完成，请求仍然可以使用本地候选立即运行；精筛结果只影响后续请求。
 
 ### 每轮结束：异步提取和整理
 
@@ -1262,6 +1309,7 @@ Memory 通过两条路径进入当前轮上下文。
 
 ```python
 memory_worker.submit(session.history)
+memory_selection_worker.submit(session.session_id, session.history)
 ```
 
 `MemoryWorker.submit()` 会先深拷贝消息快照，然后把任务提交到单线程 `ThreadPoolExecutor`。主线程不等待任务结果，立即回到输入提示，因此用户可以继续提交下一条指令。
@@ -1273,6 +1321,10 @@ memory_worker.submit(session.history)
 
 单线程队列保证不同轮次的后台任务串行执行，避免多个任务同时修改 Memory 目录。后台维护异常会被限制在 `MemoryWorker` 内，不会中断 Agent 主循环；失败的整理可以在后续轮次重试。
 
+精筛由独立的 `MemorySelectionWorker` 执行。它使用消息快照先做本地候选，再把最多 12 条候选的文件名、名称和描述交给 LLM，要求返回最多 5 个精确文件名。精筛结果写入 `MemorySelectionCache`，不会修改 `session.history` 或当前已经开始的模型请求。
+
+`MemorySelectionWorker` 使用单线程、latest-wins 策略：尚未开始的旧任务会被取消，已经开始的旧任务在提交结果前检查 generation；如果任务过期、Memory 版本发生变化或 LLM 请求失败，结果会被丢弃。缓存只存在当前进程内，应用重启后重新建立。
+
 ```mermaid
 sequenceDiagram
     actor User
@@ -1280,26 +1332,29 @@ sequenceDiagram
     participant Store as MemoryStore
     participant Agent as AgentRunner
     participant Worker as MemoryWorker
+    participant Selection as MemorySelectionWorker
+    participant Cache as MemorySelectionCache
     participant LLM
 
     User->>Main: 提交请求
     Main->>Store: 读取 MEMORY.md
-    Main->>Store: load_memories(recent dialogue)
-    Store->>LLM: side-query(name + description)
-    alt side-query 成功
-        LLM-->>Store: 最多 5 个文件名
-    else API 或 JSON 失败
-        Store->>Store: 关键词匹配降级
-    end
+    Main->>Store: 本地关键词候选
+    Main->>Cache: 读取兼容的上一轮精筛结果
+    Main->>Store: 合并候选并读取正文
     Store-->>Main: 相关 memory blocks
     Main->>Agent: 当前轮 SYSTEM + 相关 Memory
     Agent-->>Main: 本轮结果
     Main->>Worker: submit(deepcopy(history))
+    Main->>Selection: submit(session_id, deepcopy(history))
     Main-->>User: 显示结果并继续接收输入
     Worker->>Store: extract_memories()
     Store->>LLM: 提取新 Memory
     Worker->>Store: consolidate_memories()
     Store->>LLM: 达到阈值时整理 Memory
+    Selection->>Store: 本地生成候选
+    Selection->>LLM: 精筛候选元数据
+    LLM-->>Selection: 最多 5 个文件名
+    Selection->>Cache: 写入带版本的结果
 ```
 
 ### 新 Memory 提取
@@ -1345,10 +1400,14 @@ sequenceDiagram
 ### 一致性和失败边界
 
 - Memory 文件和 `MEMORY.md` 使用同目录临时文件加原子替换写入，主线程不会读到半写入内容。
-- side-query 失败只影响相关 Memory 的精确度，会降级为关键词匹配。
+- 当前轮不依赖 LLM side-query；本地关键词检索始终可以直接提供候选。
+- 后台精筛失败只影响后续请求的排序精度，不影响当前回答；缓存会继续使用本地候选或上一轮有效结果。
+- 精筛缓存绑定 Session、对话历史前缀和 `memory_revision`，Memory 文件发生变化或历史前缀不匹配时自动失效。
 - 后台提取或整理失败不会影响当前回答或下一轮用户输入。
 - `MemoryWorker` 只有一个工作线程，保证提取、整理和文件删除按轮次顺序执行。
-- `/clear` 等 slash command 不会触发 Memory 提取；只有执行过 `AgentRunner.run()` 的普通用户请求会在结束时提交后台任务。
+- `MemorySelectionWorker` 使用独立单线程和 latest-wins 策略，避免精筛任务堆积。
+- `/clear` 等 slash command 不会触发 Memory 提取或精筛；只有执行过 `AgentRunner.run()` 的普通用户请求会在结束时提交后台任务。
+- `/memory off` 会跳过 Memory 注入、后台精筛和回合结束后的 Memory 提取，并阻止已经提交的精筛结果回写缓存。
 
 ## Task 系统
 

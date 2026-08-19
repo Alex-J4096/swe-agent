@@ -127,6 +127,7 @@ def test_session_round_trip_preserves_messages_and_runtime_state(
         ],
         tool_state={"todo": [{"subject": "inspect files"}]},
         approved_command_prefixes={("git", "status")},
+        memory_enabled=False,
     )
 
     store.save(session, title="First session", workdir=tmp_path)
@@ -138,6 +139,7 @@ def test_session_round_trip_preserves_messages_and_runtime_state(
     assert loaded.history == session.history
     assert loaded.tool_state == session.tool_state
     assert loaded.approved_command_prefixes == {("git", "status")}
+    assert loaded.memory_enabled is False
     assert store.list()[0].title == "First session"
     database.close()
 

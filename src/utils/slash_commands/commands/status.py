@@ -24,8 +24,10 @@ class StatusCommand(BaseCommand):
             directory = Path(summary.workdir)
 
         thread_name = summary.title if summary is not None else None
+        provider_name = getattr(context.provider, "provider_name", "unknown")
         lines = [
             "Status",
+            f"  Provider:    {provider_name}",
             f"  Model:       {context.session.model}",
             f"  Directory:   {format_workdir(directory) if directory else 'unknown'}",
             f"  Thread name: {thread_name or '(unnamed)'}",

@@ -1,4 +1,5 @@
 from io import StringIO
+import time
 
 from src.ui.console import ConsoleRenderer, format_tool_preview
 
@@ -15,6 +16,34 @@ def test_tool_preview_is_compact_and_truncated() -> None:
     assert len(preview) == 12
 
 
+def test_thinking_indicator_is_disabled_for_non_tty_output() -> None:
+    renderer, output = make_renderer()
+
+    renderer.start_thinking()
+    time.sleep(0.02)
+    renderer.stop_thinking()
+
+    assert output.getvalue() == ""
+
+
+def test_thinking_indicator_clears_its_line_when_stopped() -> None:
+    class FakeTTY(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = FakeTTY()
+    renderer = ConsoleRenderer(output=output, use_color=False)
+    renderer.thinking.interval = 0.01
+
+    renderer.start_thinking()
+    time.sleep(0.03)
+    renderer.stop_thinking()
+
+    rendered = output.getvalue()
+    assert "Thinking" in rendered
+    assert rendered.endswith("\r\033[2K")
+
+
 def test_renderer_keeps_tool_lifecycle_in_one_visual_language() -> None:
     renderer, output = make_renderer()
 
@@ -24,6 +53,48 @@ def test_renderer_keeps_tool_lifecycle_in_one_visual_language() -> None:
     rendered = output.getvalue()
     assert "├─ run_bash" in rendered
     assert "└─ ✓ run_bash completed" in rendered
+
+
+def test_renderer_shows_tool_failure_reason() -> None:
+    renderer, output = make_renderer()
+
+    renderer.show_tool_result(
+        "run_bash",
+        {"ok": False, "error": "Team plan must be approved first"},
+    )
+
+    assert "Error: Team plan must be approved first" in output.getvalue()
+
+
+def test_renderer_prints_complete_team_plan_for_approval() -> None:
+    renderer, output = make_renderer()
+
+    renderer.show_tool_result(
+        "propose_team_plan",
+        {
+            "ok": True,
+            "plan": {
+                "plan_id": "plan_demo",
+                "status": "awaiting_approval",
+                "goal": "Update the team docs",
+                "tasks": [{
+                    "key": "docs",
+                    "subject": "Update docs",
+                    "description": "Explain recovery",
+                    "depends_on": [],
+                    "owner_hint": "writer",
+                    "workspace_mode": "worktree",
+                }],
+            },
+        },
+    )
+
+    rendered = output.getvalue()
+    assert "Plan ID: plan_demo" in rendered
+    assert "Goal: Update the team docs" in rendered
+    assert "[docs] Update docs" in rendered
+    assert "Workspace: worktree" in rendered
+    assert "Approve with: /team approve plan_demo" in rendered
 
 
 def test_renderer_strips_control_sequences_from_model_content() -> None:

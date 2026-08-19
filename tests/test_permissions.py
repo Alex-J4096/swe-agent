@@ -49,6 +49,25 @@ def test_shell_operator_requires_permission(tmp_path: Path) -> None:
     assert hard_denied is False
 
 
+def test_readonly_shell_compositions_are_auto_allowed(tmp_path: Path) -> None:
+    runner = make_runner(tmp_path)
+
+    for command in (
+        'find . -type f -name "*.md" | head -30',
+        'ls -la && find . -iname "*agent*team*" 2>/dev/null | head -50',
+        'find . -type f -name "*.py" | grep -v __pycache__ | sort',
+        "cat -n docs/TEAMS.md",
+        "pwd && ls -la",
+    ):
+        reason, hard_denied = runner._check_permission(
+            "run_bash",
+            {"command": command},
+            session=Session(model="test-model"),
+        )
+        assert reason is None
+        assert hard_denied is False
+
+
 def test_session_approval_allows_same_command_prefix(
     tmp_path: Path,
     monkeypatch,
@@ -109,6 +128,25 @@ def test_ask_user_logs_only_the_allow_decision(
     output = capsys.readouterr().out
     assert "✓ Allowed run_bash: rm build-output" in output
     assert "Potentially destructive command" not in output
+
+
+def test_escape_interrupts_permission_prompt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    runner = make_runner(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _: "\x1b")
+
+    allowed = runner._ask_user(
+        "run_bash",
+        {"command": "cat docs/TEAMS.md"},
+        "Shell command execution requires permission",
+    )
+
+    assert allowed is False
+    assert runner._permission_interrupted is True
+    assert "Returning to the user prompt" in capsys.readouterr().out
 
 
 def test_user_denial_stops_tools_and_uses_tool_free_summary(
@@ -187,3 +225,116 @@ def test_user_denial_stops_tools_and_uses_tool_free_summary(
         "role": "assistant",
         "content": "操作已拒绝，未继续执行其他工具。",
     }
+
+
+def test_runner_returns_to_user_after_team_plan_proposal(tmp_path: Path) -> None:
+    tool_call = SimpleNamespace(
+        id="call_plan",
+        function=SimpleNamespace(
+            name="propose_team_plan",
+            arguments='{"goal":"test","tasks":[]}',
+        ),
+    )
+    requests: list[dict] = []
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=[tool_call],
+                    )
+                )
+            ]
+        )
+
+    provider = SimpleNamespace(
+        client=SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create),
+            )
+        )
+    )
+    runner = AgentRunner(provider=provider, workdir=tmp_path)
+    session = Session(model="test-model")
+    toolset = SimpleNamespace(
+        schemas=lambda: [],
+        dispatch=lambda *args, **kwargs: {
+            "ok": True,
+            "status": "awaiting_approval",
+        },
+    )
+
+    result = runner.run(
+        session,
+        toolset,
+        "system",
+        stop_after_tool=lambda name, output: (
+            name == "propose_team_plan"
+            and output.get("status") == "awaiting_approval"
+        ),
+    )
+
+    assert result.ok is True
+    assert result.content is None
+    assert len(requests) == 1
+
+
+def test_runner_can_continue_after_user_confirms_team_plan(
+    tmp_path: Path,
+) -> None:
+    tool_call = SimpleNamespace(
+        id="call_plan",
+        function=SimpleNamespace(
+            name="propose_team_plan",
+            arguments='{"goal":"test","tasks":[]}',
+        ),
+    )
+    responses = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=None, tool_calls=[tool_call])
+                )
+            ]
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="continued", tool_calls=None)
+                )
+            ]
+        ),
+    ]
+
+    def create(**kwargs):
+        return responses.pop(0)
+
+    provider = SimpleNamespace(
+        client=SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create),
+            )
+        )
+    )
+    runner = AgentRunner(provider=provider, workdir=tmp_path)
+    session = Session(model="test-model")
+    toolset = SimpleNamespace(
+        schemas=lambda: [],
+        dispatch=lambda *args, **kwargs: {
+            "ok": True,
+            "status": "awaiting_approval",
+        },
+    )
+
+    result = runner.run(
+        session,
+        toolset,
+        "system",
+        stop_after_tool=lambda name, output: name == "propose_team_plan",
+        continue_after_tool=lambda name, output: True,
+    )
+
+    assert result.content == "continued"

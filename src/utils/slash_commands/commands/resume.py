@@ -12,6 +12,7 @@ def _copy_session(target, source) -> None:
     target.history = source.history
     target.tool_state = source.tool_state
     target.approved_command_prefixes = source.approved_command_prefixes
+    target.memory_enabled = source.memory_enabled
     target.running = True
 
 

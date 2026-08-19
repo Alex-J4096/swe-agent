@@ -1,4 +1,5 @@
 import json
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,6 +104,24 @@ class MemoryStore:
             return ""
         return self.memory_index.read_text(encoding="utf-8").strip()
 
+    def memory_revision(self) -> str:
+        """Return a cheap revision token for the current memory files."""
+        digest = hashlib.sha256()
+        if not self.memory_dir.exists():
+            return digest.hexdigest()
+
+        for path in sorted(self.memory_dir.glob("*.md")):
+            if path.name.lower() == MEMORY_INDEX_NAME.lower():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            digest.update(path.name.encode("utf-8"))
+            digest.update(str(stat.st_mtime_ns).encode("ascii"))
+            digest.update(str(stat.st_size).encode("ascii"))
+        return digest.hexdigest()
+
     def read_memory_file(self, name: str) -> str | None:
         """Read a single memory file's complete Markdown content."""
         path = self._resolve_memory_path(name)
@@ -133,6 +152,27 @@ class MemoryStore:
             )
         return result
 
+    def describe_memories(
+        self,
+        filenames: list[str],
+    ) -> list[dict[str, str]]:
+        """Return safe metadata for a bounded set of memory filenames."""
+        requested = set(filenames)
+        memories = {
+            memory["filename"]: memory
+            for memory in self.list_memory_files()
+            if memory["filename"] in requested
+        }
+        return [
+            {
+                "filename": filename,
+                "name": memories[filename]["name"],
+                "description": memories[filename]["description"],
+            }
+            for filename in filenames
+            if filename in memories
+        ]
+
     def select_relevant_memories(
         self,
         messages: list[dict[str, Any]],
@@ -150,6 +190,9 @@ class MemoryStore:
         memories = self.list_memory_files()
         if not memories:
             return []
+
+        if not use_llm:
+            return self._select_by_keywords(messages, memories, max_items)
 
         dialogue = self._format_messages(messages, max_chars=4_000)
         candidates = "\n".join(
@@ -207,6 +250,62 @@ class MemoryStore:
                 "</memory>"
             )
         return "\n\n".join(sections)
+
+    def load_memories_by_filenames(self, filenames: list[str]) -> str:
+        """Load memory bodies in the caller-provided order."""
+        memories_by_filename = {
+            memory["filename"]: memory
+            for memory in self.list_memory_files()
+        }
+        sections = []
+        for filename in filenames:
+            memory = memories_by_filename.get(filename)
+            if memory is None:
+                continue
+            sections.append(
+                f"<memory name=\"{memory['name']}\" "
+                f"type=\"{memory['type']}\">\n"
+                f"{memory['body']}\n"
+                "</memory>"
+            )
+        return "\n\n".join(sections)
+
+    def refine_relevant_memories(
+        self,
+        messages: list[dict[str, Any]],
+        candidate_filenames: list[str],
+        max_items: int = 5,
+    ) -> list[str] | None:
+        """Use the LLM to rerank local candidates without blocking the agent."""
+        if max_items <= 0:
+            return []
+
+        candidates = self.describe_memories(candidate_filenames)
+        if not candidates:
+            return []
+
+        candidate_text = "\n".join(
+            f"- {item['filename']}: {item['name']} — "
+            f"{item['description']}"
+            for item in candidates
+        )
+        prompt = (
+            "Select the memories most relevant to this dialogue. Return only "
+            "a JSON array of exact filenames from the candidate list, with at "
+            f"most {max_items} items. Do not return explanations.\n\n"
+            f"Candidates:\n{candidate_text}\n\n"
+            f"Dialogue:\n{self._format_messages(messages, max_chars=4_000)}"
+        )
+        response = self._call_llm(prompt, max_tokens=512)
+        if response is None:
+            return None
+
+        valid_filenames = {item["filename"] for item in candidates}
+        selected: list[str] = []
+        for filename in self._parse_json_array(response):
+            if filename in valid_filenames and filename not in selected:
+                selected.append(filename)
+        return selected[:max_items]
 
     def extract_memories(
         self,

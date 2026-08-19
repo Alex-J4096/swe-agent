@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.infrastructure.memory import Memory, MemoryStore
+from src.infrastructure.memory_selection_cache import MemorySelectionCache
+from src.runtime.memory_selection_worker import MemorySelectionWorker
 from src.runtime.memory_worker import MemoryWorker
 
 
@@ -130,6 +132,27 @@ class MemoryStoreTests(unittest.TestCase):
 
             selected = store.select_relevant_memories(
                 [{"role": "user", "content": "What language is this?"}]
+            )
+
+            self.assertEqual(selected, ["project-language.md"])
+
+    def test_refines_only_requested_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(
+                Path(temp_dir),
+                client=fake_client('["project-language.md", "unknown.md"]'),
+                model="test-model",
+            )
+            store.write_memory_file(
+                "project-language",
+                "project",
+                "The project uses Python",
+                "Use Python 3.13.",
+            )
+
+            selected = store.refine_relevant_memories(
+                [{"role": "user", "content": "What language is this?"}],
+                ["project-language.md"],
             )
 
             self.assertEqual(selected, ["project-language.md"])
@@ -279,6 +302,67 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(store.received[0][0]["content"], "original")
         self.assertEqual(store.steps, ["extract", "consolidate"])
 
+    def test_selection_cache_accepts_history_extensions(self) -> None:
+        cache = MemorySelectionCache()
+        messages = [{"role": "user", "content": "Use Python."}]
+        cache.put(
+            session_id="session-1",
+            messages=messages,
+            memory_revision="rev-1",
+            filenames=["project-language.md"],
+        )
+
+        self.assertEqual(
+            cache.get_compatible(
+                session_id="session-1",
+                messages=[
+                    *messages,
+                    {"role": "assistant", "content": "Okay."},
+                ],
+                memory_revision="rev-1",
+            ),
+            ["project-language.md"],
+        )
+        self.assertEqual(
+            cache.get_compatible(
+                session_id="session-1",
+                messages=messages,
+                memory_revision="rev-2",
+            ),
+            [],
+        )
+
+    def test_selection_worker_writes_refined_snapshot_to_cache(self) -> None:
+        class FakeStore:
+            def memory_revision(self) -> str:
+                return "rev-1"
+
+            def select_relevant_memories(self, messages, max_items, use_llm):
+                self.messages = messages
+                return ["project-language.md"]
+
+            def refine_relevant_memories(self, messages, candidates, max_items):
+                return ["project-language.md"]
+
+        store = FakeStore()
+        cache = MemorySelectionCache()
+        worker = MemorySelectionWorker(store, cache)
+        messages = [{"role": "user", "content": "Use Python."}]
+
+        future = worker.submit("session-1", messages)
+        self.assertIsNotNone(future)
+        future.result(timeout=2)
+        worker.shutdown(wait=True)
+
+        messages.append({"role": "assistant", "content": "Done."})
+        self.assertEqual(
+            cache.get_compatible(
+                session_id="session-1",
+                messages=messages,
+                memory_revision="rev-1",
+            ),
+            ["project-language.md"],
+        )
 
 if __name__ == "__main__":
     unittest.main()

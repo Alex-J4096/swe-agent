@@ -25,6 +25,8 @@ from src.tools.todo_manager.todo_manager import (
 )
 from src.tools.toolset import ToolSet
 from src.ui.console import ConsoleRenderer
+from src.utils.shell import READONLY_PREFIXES, is_readonly_command, shell_tokens
+from src.utils.terminal import ESCAPE, read_confirmation
 
 
 CONTINUATION_PROMPT = (
@@ -46,19 +48,7 @@ class AgentRunResult:
 class AgentRunner:
     MAX_TRUNCATION_CONTINUATIONS = 3
     TRUNCATION_MAX_TOKENS_MULTIPLIER = 8
-    SAFE_BASH_PREFIXES = (
-        ("pwd",),
-        ("ls",),
-        ("rg",),
-        ("grep",),
-        ("head",),
-        ("tail",),
-        ("wc",),
-        ("git", "status"),
-        ("git", "diff"),
-        ("git", "log"),
-    )
-    SHELL_OPERATOR_CHARS = frozenset("|&;><`$(){}*?[]~")
+    SAFE_BASH_PREFIXES = READONLY_PREFIXES
 
     def __init__(
         self,
@@ -75,13 +65,16 @@ class AgentRunner:
         if max_history_messages < 3:
             raise ValueError("max_history_messages must be at least 3")
 
-        self.client = provider.client
+        # Keep the provider reference instead of copying the client.  This lets
+        # /model replace the provider credentials without rebuilding the loop.
+        self.provider = provider
         self.workdir = (workdir or Path.cwd()).resolve()
         self.max_tokens = max_tokens
         self.max_tool_iterations = max_tool_iterations
         self.todo_reminder_interval = todo_reminder_interval
         self.max_history_messages = max_history_messages
         self.renderer = renderer or ConsoleRenderer()
+        self._permission_interrupted = False
 
     def run(
         self,
@@ -92,11 +85,18 @@ class AgentRunner:
         on_tool_requested: Callable[[str, str], None] | None = None,
         confirm_permission: Callable[[str, str], bool] | None = None,
         on_tool_result: Callable[[str, dict[str, Any]], None] | None = None,
+        before_model_request: Callable[[Session], None] | None = None,
+        tool_context: ToolContext | None = None,
+        stop_after_tool: Callable[[str, dict[str, Any]], bool] | None = None,
+        continue_after_tool: Callable[[str, dict[str, Any]], bool] | None = None,
     ) -> AgentRunResult:
+        self._permission_interrupted = False
         tools = toolset.schemas()
         iterations_since_todo_update = 0
 
         for _ in range(self.max_tool_iterations):
+            if before_model_request is not None:
+                before_model_request(session)
             self._inject_background_events(session, toolset)
             self._apply_message_limit(session)
             effective_system_prompt = system_prompt
@@ -115,19 +115,23 @@ class AgentRunner:
                 )
                 iterations_since_todo_update = 0
 
+            self.renderer.start_thinking()
             try:
-                response, recovered_content = (
-                    self._request_with_truncation_recovery(
-                        session=session,
-                        system_prompt=effective_system_prompt,
-                        tools=tools,
+                try:
+                    response, recovered_content = (
+                        self._request_with_truncation_recovery(
+                            session=session,
+                            system_prompt=effective_system_prompt,
+                            tools=tools,
+                        )
                     )
-                )
-            except OpenAIError as exc:
-                return AgentRunResult(
-                    ok=False,
-                    error=f"Model request failed: {exc}",
-                )
+                except OpenAIError as exc:
+                    return AgentRunResult(
+                        ok=False,
+                        error=f"Model request failed: {exc}",
+                    )
+            finally:
+                self.renderer.stop_thinking()
 
             assistant_message = response.choices[0].message
             tool_calls = [
@@ -164,6 +168,7 @@ class AgentRunner:
                 )
 
             todo_updated = False
+            effective_tool_context = tool_context or ToolContext(session=session)
             for tool_call in assistant_message.tool_calls:
                 tool_name = tool_call.function.name
                 arguments_json = tool_call.function.arguments
@@ -210,7 +215,7 @@ class AgentRunner:
                     output = toolset.dispatch(
                         tool_name,
                         arguments_json,
-                        context=ToolContext(session=session),
+                        context=effective_tool_context,
                     )
                 else:
                     output = {
@@ -230,6 +235,24 @@ class AgentRunner:
                         "content": json.dumps(output, ensure_ascii=False),
                     }
                 )
+
+                if self._permission_interrupted:
+                    self._compact_after_round(session)
+                    return AgentRunResult(
+                        ok=True,
+                        content=None,
+                        stopped_by_permission=True,
+                    )
+
+                if stop_after_tool is not None and stop_after_tool(tool_name, output):
+                    should_continue = (
+                        continue_after_tool(tool_name, output)
+                        if continue_after_tool is not None
+                        else False
+                    )
+                    if not should_continue:
+                        self._compact_after_round(session)
+                        return AgentRunResult(ok=True, content=None)
 
                 if hard_denied or not allowed:
                     summary = self._request_permission_summary(
@@ -348,18 +371,22 @@ class AgentRunner:
             },
             *session.history,
         ]
+        self.renderer.start_thinking("Preparing response")
         try:
-            response = request_with_retry(
-                lambda: self.client.chat.completions.create(
-                    model=session.model,
-                    messages=list(messages),
-                    tools=[],
-                    tool_choice="none",
-                    max_tokens=self.max_tokens,
+            try:
+                response = request_with_retry(
+                    lambda: self.provider.client.chat.completions.create(
+                        model=session.model,
+                        messages=list(messages),
+                        tools=[],
+                        tool_choice="none",
+                        max_tokens=self.max_tokens,
+                    )
                 )
-            )
-        except OpenAIError:
-            return fallback
+            except OpenAIError:
+                return fallback
+        finally:
+            self.renderer.stop_thinking()
 
         choices = getattr(response, "choices", [])
         if not choices:
@@ -385,7 +412,7 @@ class AgentRunner:
 
         def request(messages: list[dict[str, Any]], max_tokens: int) -> Any:
             return request_with_retry(
-                lambda: self.client.chat.completions.create(
+                lambda: self.provider.client.chat.completions.create(
                     model=session.model,
                     messages=list(messages),
                     tools=tools,
@@ -543,9 +570,7 @@ class AgentRunner:
 
     @classmethod
     def _contains_shell_operator(cls, command: str) -> bool:
-        return any(char in cls.SHELL_OPERATOR_CHARS for char in command) or any(
-            marker in command for marker in ("\n", "\r")
-        )
+        return not is_readonly_command(command)
 
     def _command_stays_in_workspace(
         self,
@@ -560,6 +585,8 @@ class AgentRunner:
             return False
 
         for token in tokens[1:]:
+            if token == "/dev/null":
+                continue
             path = Path(token)
             if path.is_absolute() or ".." in path.parts:
                 return False
@@ -571,11 +598,10 @@ class AgentRunner:
         session: Session | None,
     ) -> bool:
         command = args.get("command", "")
-        if not isinstance(command, str) or self._contains_shell_operator(command):
+        if not isinstance(command, str):
             return False
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
+        tokens = shell_tokens(command)
+        if not tokens:
             return False
         if not tokens or not self._command_stays_in_workspace(args, tokens):
             return False
@@ -583,6 +609,8 @@ class AgentRunner:
         prefix = self._command_prefix(command)
         if session is not None and prefix in session.approved_command_prefixes:
             return True
+        if not is_readonly_command(command):
+            return False
         return any(
             tuple(tokens[:len(allowed_prefix)]) == allowed_prefix
             for allowed_prefix in self.SAFE_BASH_PREFIXES
@@ -618,10 +646,7 @@ class AgentRunner:
     ) -> bool:
         question = self.renderer.permission_question(tool_name)
 
-        try:
-            answer = input(question).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
+        answer, raw_tty = read_confirmation(question)
 
         allowed = answer in {"y", "yes", "a", "allow", "always"}
         session_scope = answer in {"a", "allow", "always"}
@@ -631,9 +656,19 @@ class AgentRunner:
                 prefix = self._command_prefix(command)
                 if prefix:
                     session.approved_command_prefixes.add(prefix)
-        if sys.stdin.isatty() and sys.stdout.isatty():
+        if raw_tty:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        elif sys.stdin.isatty() and sys.stdout.isatty():
             # input() has moved to the next line; erase its prompt and answer.
             self.renderer.clear_input_line()
+
+        if answer == ESCAPE:
+            self._permission_interrupted = True
+            self.renderer.show_notice(
+                "Permission prompt interrupted. Returning to the user prompt."
+            )
+            return False
 
         self._print_permission_decision(
             tool_name,

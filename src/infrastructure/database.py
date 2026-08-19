@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -173,6 +173,13 @@ class AppDatabase:
                 PRAGMA user_version = 2;
                 """
             )
+
+        if current_version < 3:
+            self.connection.execute(
+                "ALTER TABLE session_state ADD COLUMN memory_enabled "
+                "INTEGER NOT NULL DEFAULT 1"
+            )
+            self.connection.execute("PRAGMA user_version = 3")
         self.connection.commit()
 
     @contextmanager
@@ -208,6 +215,16 @@ class AppDatabase:
         if row is None:
             return None
         return ProviderProfile(**dict(row))
+
+    def list_providers(self) -> list[ProviderProfile]:
+        rows = self.connection.execute(
+            """
+            SELECT id, name, base_url, api_key_env
+            FROM provider_profiles
+            ORDER BY name COLLATE NOCASE
+            """
+        ).fetchall()
+        return [ProviderProfile(**dict(row)) for row in rows]
 
     def upsert_model(self, profile: ModelProfile) -> None:
         config_json = json.dumps(profile.config, ensure_ascii=False, sort_keys=True)

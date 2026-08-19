@@ -7,9 +7,11 @@ TTY or in a plain-text log.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -34,6 +36,74 @@ class Theme:
     reset: str = "\033[0m"
 
 
+class ThinkingIndicator:
+    """Animate a single status line while a model request is in flight."""
+
+    FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧")
+
+    def __init__(
+        self,
+        output: TextIO,
+        *,
+        enabled: bool,
+        interval: float = 0.08,
+    ) -> None:
+        self.output = output
+        self.enabled = enabled
+        self.interval = interval
+        self._stop = threading.Event()
+        self._message = "Thinking"
+        self._message_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def start(self, message: str = "Thinking") -> None:
+        """Start the animation if output is an interactive terminal."""
+        if not self.enabled:
+            return
+
+        with self._message_lock:
+            self._message = message
+
+        if self.is_running:
+            return
+
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="thinking-indicator",
+            daemon=True,
+        )
+        self._thread.start()
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run(self) -> None:
+        for frame in itertools.cycle(self.FRAMES):
+            if self._stop.is_set():
+                break
+
+            with self._message_lock:
+                message = self._message
+            self.output.write(f"\r\033[2K  {frame} {message}")
+            self.output.flush()
+            if self._stop.wait(self.interval):
+                break
+
+    def stop(self) -> None:
+        """Stop the animation and erase its line, including on exceptions."""
+        thread = self._thread
+        if thread is None:
+            return
+
+        self._stop.set()
+        thread.join(timeout=max(0.3, self.interval * 4))
+        self.output.write("\r\033[2K")
+        self.output.flush()
+        self._thread = None
+
+
 class ConsoleRenderer:
     """Render user-facing terminal events with consistent hierarchy and tone."""
 
@@ -49,6 +119,16 @@ class ConsoleRenderer:
             self.output.isatty() if use_color is None else use_color
         )
         self.theme = theme or Theme()
+        self.thinking = ThinkingIndicator(
+            self.output,
+            enabled=self.output.isatty(),
+        )
+
+    def start_thinking(self, message: str = "Thinking") -> None:
+        self.thinking.start(message)
+
+    def stop_thinking(self) -> None:
+        self.thinking.stop()
 
     def _safe(self, value: object) -> str:
         """Keep model/tool text from injecting terminal control sequences."""
@@ -109,11 +189,55 @@ class ConsoleRenderer:
             f"{self._paint(label, color)}"
         )
 
+        if name == "propose_team_plan" and ok:
+            self.show_team_plan(output.get("plan"))
+            return
+
+        if not ok and output.get("error"):
+            self._write(f"    Error: {self._safe(output['error'])}")
+
         if show_content:
             content = output.get("content")
             if isinstance(content, str) and content:
                 for line in self._safe(content).splitlines():
                     self._write(f"    {line}")
+
+    def show_team_plan(self, plan: object) -> None:
+        """Render the complete proposed plan at the approval boundary."""
+        if not isinstance(plan, dict):
+            return
+        plan_id = self._safe(plan.get("plan_id", "unknown"))
+        goal = self._safe(plan.get("goal", ""))
+        status = self._safe(plan.get("status", "awaiting_approval"))
+        self._write(f"    Plan ID: {plan_id}")
+        self._write(f"    Status: {status}")
+        self._write(f"    Goal: {goal}")
+
+        tasks = plan.get("tasks", [])
+        if not isinstance(tasks, list):
+            tasks = []
+        self._write(f"    Tasks ({len(tasks)}):")
+        for index, task in enumerate(tasks, start=1):
+            if not isinstance(task, dict):
+                continue
+            key = self._safe(task.get("key", ""))
+            subject = self._safe(task.get("subject", ""))
+            description = self._safe(task.get("description", ""))
+            depends_on = task.get("depends_on", [])
+            if not isinstance(depends_on, list):
+                depends_on = []
+            owner_hint = self._safe(task.get("owner_hint") or "auto")
+            workspace = self._safe(task.get("workspace_mode") or "repo")
+            self._write(f"      {index}. [{key}] {subject}")
+            if description:
+                self._write(f"         Description: {description}")
+            self._write(
+                "         Depends on: "
+                f"{', '.join(self._safe(item) for item in depends_on) or 'none'}"
+            )
+            self._write(f"         Owner: {owner_hint}")
+            self._write(f"         Workspace: {workspace}")
+        self._write(f"    Approve with: /team approve {plan_id}")
 
     def show_assistant(self, content: str) -> None:
         """Render a model response with a width-independent open rail."""
@@ -243,6 +367,12 @@ class ConsoleRenderer:
 
     def permission_question(self, tool_name: str) -> str:
         question = f"  ? Allow {tool_name}? [y] once / [a] session / [n] deny "
+        return self._paint(question, self.theme.warning)
+
+    def team_plan_continue_question(self) -> str:
+        question = (
+            "  ? Continue Agent Loop? [y] continue / [n] return to prompt "
+        )
         return self._paint(question, self.theme.warning)
 
     def permission_decision(

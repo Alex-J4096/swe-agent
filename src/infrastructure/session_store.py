@@ -106,16 +106,23 @@ class SessionStore:
             connection.execute(
                 """
                 INSERT INTO session_state
-                    (session_id, tool_state_json, approved_prefixes_json)
-                VALUES (?, ?, ?)
+                    (
+                        session_id,
+                        tool_state_json,
+                        approved_prefixes_json,
+                        memory_enabled
+                    )
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     tool_state_json = excluded.tool_state_json,
-                    approved_prefixes_json = excluded.approved_prefixes_json
+                    approved_prefixes_json = excluded.approved_prefixes_json,
+                    memory_enabled = excluded.memory_enabled
                 """,
                 (
                     session.session_id,
                     json.dumps(session.tool_state, ensure_ascii=False, sort_keys=True),
                     json.dumps(approved_prefixes, ensure_ascii=False, sort_keys=True),
+                    int(session.memory_enabled),
                 ),
             )
 
@@ -138,7 +145,7 @@ class SessionStore:
         ).fetchall()
         state = self.database.connection.execute(
             """
-            SELECT tool_state_json, approved_prefixes_json
+            SELECT tool_state_json, approved_prefixes_json, memory_enabled
             FROM session_state
             WHERE session_id = ?
             """,
@@ -161,6 +168,7 @@ class SessionStore:
             history=[json.loads(message["payload_json"]) for message in messages],
             tool_state=tool_state,
             approved_command_prefixes=approved_prefixes,
+            memory_enabled=bool(state["memory_enabled"]) if state else True,
             running=True,
         )
 
