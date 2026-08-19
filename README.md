@@ -5,22 +5,22 @@
 - LLM模型与工具调用
 - Agent 循环、子 Agent 和后台任务
 - 会话持久化、上下文压缩与项目记忆
-- 文件操作、Shell 权限控制和 Skill 加载
+- 文件操作、Shell 权限控制和Skill加载
 
 本项目主要面向学习用途，当前实现不保证生产环境所需的稳定性、隔离性和安全性。运行 Agent 生成的命令或文件修改前，请确认当前工作目录和权限范围符合预期。
 
 ## 基本功能
 
-- 通过 OpenAI Compatible API与模型进行对话
-- 读取、写入和编辑当前 workspace 内的文件
-- 在权限确认机制下执行 Shell 命令
+- 通过OpenAI Compatible API与模型进行对话
+- 读取、写入和编辑当前workspace内的文件
+- 在权限确认机制下执行Shell命令
 - Todo、任务和后台任务管理
-- 委派任务给子 Agent
-- 从 `.agents/skills/` 加载项目 Skill
+- 委派任务给子Agent
+- 从`.agents/skills/`加载项目Skill
 - 保存和恢复历史会话
 - 自动维护项目级长期记忆
-- Memory 本地快速检索与后台 LLM 精筛
-- 使用 `/help`、`/model`、`/sessions` 等斜杠命令管理会话
+- 基于对话生成Memory，会话开始前通过本地快速检索与后台LLM精筛组装到上下文中
+- 使用`/help`、`/model`、`/sessions`等斜杠命令管理会话
 
 ## 环境要求
 
