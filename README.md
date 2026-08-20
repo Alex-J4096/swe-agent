@@ -15,8 +15,8 @@
 - 读取、写入和编辑当前 workspace 内的文件
 - 在 OS sandbox 中执行 Shell 命令，仅对能力升级进行审批
 - Todo、任务和后台任务管理
-- 委派任务给子 Agent
-- 从 `.agents/skills/` 加载项目 Skill
+- 委派任务给子Agent
+- 从`.agents/skills/`加载项目Skill
 - 保存和恢复历史会话
 - 自动维护项目级长期记忆
 - Memory 本地快速检索与后台 LLM 精筛
