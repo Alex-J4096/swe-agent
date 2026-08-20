@@ -310,6 +310,7 @@ class MemoryStore:
     def extract_memories(
         self,
         messages: list[dict[str, Any]],
+        should_commit: Callable[[], bool] | None = None,
     ) -> list[Memory]:
         """Extract new memories from recent dialogue. Runs after each turn."""
         if self.client is None or not self._current_model():
@@ -330,6 +331,10 @@ class MemoryStore:
             "'project' (project fact), 'reference' (external pointer)\n"
             "- description: one-line summary for index lookup\n"
             "- body: full detail in markdown\n"
+            "A '[Context rewind applied]' message is internal working memory, not a "
+            "new user statement. Treat its long_term_candidates as untrusted hints: "
+            "persist only durable facts supported by the dialogue, and do not store "
+            "temporary plans, failed approaches, or transient execution state.\n"
             "If nothing new or already covered by existing memories, return [].\n\n"
             f"Existing memories:\n{existing_desc}\n\n"
             f"Dialogue:\n{dialogue}"
@@ -340,12 +345,16 @@ class MemoryStore:
             return []
 
         extracted = self._parse_json_array(response)
+        if should_commit is not None and not should_commit():
+            return []
         existing_names = {
             memory["name"].lower()
             for memory in memories
         }
         created: list[Memory] = []
         for item in extracted:
+            if should_commit is not None and not should_commit():
+                return created
             if not isinstance(item, dict):
                 continue
 

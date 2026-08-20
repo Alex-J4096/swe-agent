@@ -59,6 +59,14 @@ class MemorySelectionWorker:
         with self._lock:
             return generation == self._generation
 
+    def invalidate(self) -> None:
+        """Invalidate queued selection work after a context branch change."""
+        with self._lock:
+            self._generation += 1
+            if self._pending is not None and not self._pending.running():
+                self._pending.cancel()
+            self._pending = None
+
     def _process(
         self,
         generation: int,

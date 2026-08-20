@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from src.infrastructure.database import AppDatabase
     from src.infrastructure.memory_selection_cache import MemorySelectionCache
     from src.ui.console import ConsoleRenderer
+    from src.runtime.approval import ApprovalRuntime
 
 
 @dataclass
@@ -34,6 +35,7 @@ class CommandContext:
     team_runtime: object | None = None
     team_controller: object | None = None
     database: "AppDatabase | None" = None
+    approval_runtime: "ApprovalRuntime | None" = None
     on_provider_changed: Callable[[Provider], None] | None = None
 
 

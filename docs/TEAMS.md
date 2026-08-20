@@ -32,9 +32,9 @@ Lead 在计划提案前不会调用 workspace 工具，避免用户还没有拿�
 
 审批前，团队上下文中的 `write_file`、`edit_file`、写入型 Bash 和任务管理修改会被运行时拦截。Lead 只能编排；队友只有在持有 active task 时才能修改工作区。
 
-### Bash 权限判断
+### Shell sandbox 与权限判断
 
-权限层和 TeamRuntime 共用只读 Bash 判断。以下命令及其安全组合默认允许，不需要额外确认：
+队友的 Shell 与前台 Agent 使用同一 OS sandbox。workspace 内普通测试、构建、lint、format 和只读命令默认执行，不再逐条确认；网络和破坏性操作仍需能力审批。
 
 ```text
 pwd、ls、find、cat、rg、grep、head、tail、wc、sort
@@ -48,7 +48,13 @@ find . -type f -name "*.py" | grep -v __pycache__ | sort
 pwd && ls -la
 ```
 
-`2>/dev/null` 这类将错误输出重定向到系统空设备的形式也会被视为安全。写入重定向、命令替换、`find -exec`/`-delete` 以及带绝对路径的 `cd` 仍会进入权限确认。工具失败时终端会同时显示具体错误原因。
+Shell 默认只能写当前 task workspace 和私有临时目录，网络关闭，敏感宿主环境变量不传入。需要网络、`rm` 或 `git reset/clean/rebase` 等操作时，worker 状态切换到 `awaiting_approval`，root 终端使用 `/permissions` 查看和处理；worker 自身不会读取 stdin。
+
+### 队友的 checkpoint 上下文
+
+Lead 和每个队友的临时 Session 都有独立 checkpoint 链。模型可以单独调用 `rewind_context` 清除自己的无效探索；不能回退另一个 Agent 的 history、Team 任务板或消息总线。被放弃的上下文分支保存在 workspace 的 `.swe-agent/context/<session-hash>/branches/`。
+
+Team workspace 或 worktree 中已经产生的文件修改、Shell/网络副作用、审批结果和已投递 Team 事件不会随上下文回退。队友必须在 carry-forward 的 `files_changed` 和 `external_effects` 中记录这些事实，避免新分支重复执行。Team worker Session 当前不跨进程重启恢复，因此它的 checkpoint 元数据也不会在重启后重新挂载；已写出的 checkpoint 和 branch JSONL 仍保留用于审计。
 
 ## 状态目录
 
@@ -77,4 +83,4 @@ worktree 路径会写回任务板，队友的文件工具和 Bash 都通过 `Too
 
 如果 CLI 在计划审批前崩溃，计划仍保存在 `state.json` 中。重启后使用相同的 team ID 启动，再执行原来的 `/team approve <plan_id>` 即可，不需要重新生成计划。
 
-当前仍未提供进程级 sandbox、跨重启的 Agent Session 恢复，以及 worktree 自动合并。这些属于后续可靠性和交付阶段。
+当前已提供 Shell 进程 sandbox；macOS 使用 `sandbox-exec`，Linux 需要 `bubblewrap`，无后端时 fail-closed。仍未提供跨重启的 worker Agent Session 恢复和 worktree 自动合并，这些属于后续可靠性和交付阶段。

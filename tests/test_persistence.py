@@ -1,3 +1,4 @@
+import sqlite3
 from io import StringIO
 from pathlib import Path
 
@@ -31,6 +32,64 @@ def make_store(tmp_path: Path) -> tuple[AppDatabase, SessionStore]:
         )
     )
     return database, SessionStore(database)
+
+
+def test_database_v3_migrates_permission_scopes(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE session_state (
+            session_id TEXT PRIMARY KEY,
+            tool_state_json TEXT NOT NULL DEFAULT '{}',
+            approved_prefixes_json TEXT NOT NULL DEFAULT '[]',
+            memory_enabled INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    connection.execute("PRAGMA user_version = 3")
+    connection.commit()
+    connection.close()
+
+    database = AppDatabase(path)
+    columns = {
+        row[1]
+        for row in database.connection.execute("PRAGMA table_info(session_state)")
+    }
+
+    assert "approved_scopes_json" in columns
+    assert "context_state_json" in columns
+    assert database.connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    database.close()
+
+
+def test_database_v4_migrates_context_state(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-v4.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE session_state (
+            session_id TEXT PRIMARY KEY,
+            tool_state_json TEXT NOT NULL DEFAULT '{}',
+            approved_prefixes_json TEXT NOT NULL DEFAULT '[]',
+            approved_scopes_json TEXT NOT NULL DEFAULT '[]',
+            memory_enabled INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    connection.execute("PRAGMA user_version = 4")
+    connection.commit()
+    connection.close()
+
+    database = AppDatabase(path)
+    columns = {
+        row[1]
+        for row in database.connection.execute("PRAGMA table_info(session_state)")
+    }
+
+    assert "context_state_json" in columns
+    assert database.connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    database.close()
 
 
 def test_database_persists_provider_and_default_model(tmp_path: Path) -> None:
@@ -127,7 +186,20 @@ def test_session_round_trip_preserves_messages_and_runtime_state(
         ],
         tool_state={"todo": [{"subject": "inspect files"}]},
         approved_command_prefixes={("git", "status")},
+        approved_permission_scopes={"sandbox.network:abc123"},
         memory_enabled=False,
+        context_checkpoints=[
+            {
+                "checkpoint_id": "cp_0123456789abcdef0123456789abcdef",
+                "branch_id": "branch_0123456789abcdef0123456789abcdef",
+                "history_length": 1,
+                "history_digest": "digest",
+                "reason": "model_step_1",
+                "created_at": "2026-08-20T00:00:00+00:00",
+            }
+        ],
+        context_branch_id="branch_0123456789abcdef0123456789abcdef",
+        context_generation=2,
     )
 
     store.save(session, title="First session", workdir=tmp_path)
@@ -139,7 +211,12 @@ def test_session_round_trip_preserves_messages_and_runtime_state(
     assert loaded.history == session.history
     assert loaded.tool_state == session.tool_state
     assert loaded.approved_command_prefixes == {("git", "status")}
+    assert loaded.approved_permission_scopes == {"sandbox.network:abc123"}
     assert loaded.memory_enabled is False
+    assert loaded.context_checkpoints == session.context_checkpoints
+    assert loaded.context_branch_id == session.context_branch_id
+    assert loaded.context_generation == 2
+    assert loaded.pending_context_rewind is None
     assert store.list()[0].title == "First session"
     database.close()
 
@@ -184,9 +261,16 @@ def test_clear_does_not_persist_an_empty_transient_session(tmp_path: Path) -> No
         workdir=tmp_path,
     )
 
+    original_branch = session.context_branch_id
+    session.context_checkpoints.append({"checkpoint_id": "cp_test"})
+    session.context_generation = 2
+
     ClearCommand().execute([], context)
 
     assert store.exists(session.session_id) is False
+    assert session.context_checkpoints == []
+    assert session.context_generation == 0
+    assert session.context_branch_id != original_branch
     database.close()
 
 
@@ -213,6 +297,8 @@ def test_status_command_reports_current_session_metadata(tmp_path: Path) -> None
     assert f"Directory:   {tmp_path}" in result.message
     assert "Thread name: Investigate auth" in result.message
     assert f"Session UID: {current.session_id}" in result.message
+    assert f"Context:     {current.context_branch_id}" in result.message
+    assert "(0 checkpoints, generation 0)" in result.message
     database.close()
 
 

@@ -17,6 +17,9 @@ class ToolContext:
     agent_id: str | None = None
     task_id: str | None = None
     workspace_root: Path | None = None
+    approval_source_kind: str = "foreground"
+    approval_interactive: bool = True
+    granted_capabilities: frozenset[str] = frozenset()
 
 
 class BaseTool(Generic[ArgsT]):

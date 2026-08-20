@@ -50,6 +50,12 @@ class SessionStore:
         workdir: Path | None = None,
     ) -> None:
         approved_prefixes = [list(prefix) for prefix in session.approved_command_prefixes]
+        approved_scopes = sorted(session.approved_permission_scopes)
+        context_state = {
+            "checkpoints": session.context_checkpoints,
+            "branch_id": session.context_branch_id,
+            "generation": session.context_generation,
+        }
         with self.database.transaction() as connection:
             existing = connection.execute(
                 "SELECT title, workdir FROM sessions WHERE id = ?",
@@ -110,19 +116,25 @@ class SessionStore:
                         session_id,
                         tool_state_json,
                         approved_prefixes_json,
-                        memory_enabled
+                        approved_scopes_json,
+                        memory_enabled,
+                        context_state_json
                     )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     tool_state_json = excluded.tool_state_json,
                     approved_prefixes_json = excluded.approved_prefixes_json,
-                    memory_enabled = excluded.memory_enabled
+                    approved_scopes_json = excluded.approved_scopes_json,
+                    memory_enabled = excluded.memory_enabled,
+                    context_state_json = excluded.context_state_json
                 """,
                 (
                     session.session_id,
                     json.dumps(session.tool_state, ensure_ascii=False, sort_keys=True),
                     json.dumps(approved_prefixes, ensure_ascii=False, sort_keys=True),
+                    json.dumps(approved_scopes, ensure_ascii=False, sort_keys=True),
                     int(session.memory_enabled),
+                    json.dumps(context_state, ensure_ascii=False, sort_keys=True),
                 ),
             )
 
@@ -145,7 +157,8 @@ class SessionStore:
         ).fetchall()
         state = self.database.connection.execute(
             """
-            SELECT tool_state_json, approved_prefixes_json, memory_enabled
+            SELECT tool_state_json, approved_prefixes_json,
+                   approved_scopes_json, memory_enabled, context_state_json
             FROM session_state
             WHERE session_id = ?
             """,
@@ -154,12 +167,24 @@ class SessionStore:
 
         tool_state: dict[str, Any] = {}
         approved_prefixes: set[tuple[str, ...]] = set()
+        approved_scopes: set[str] = set()
+        context_state: dict[str, Any] = {}
         if state is not None:
             tool_state = json.loads(state["tool_state_json"])
             approved_prefixes = {
                 tuple(prefix)
                 for prefix in json.loads(state["approved_prefixes_json"])
             }
+            approved_scopes = set(json.loads(state["approved_scopes_json"]))
+            loaded_context_state = json.loads(state["context_state_json"])
+            if isinstance(loaded_context_state, dict):
+                context_state = loaded_context_state
+
+        checkpoints = context_state.get("checkpoints", [])
+        if not isinstance(checkpoints, list):
+            checkpoints = []
+        branch_id = context_state.get("branch_id")
+        generation = context_state.get("generation", 0)
 
         return Session(
             model=row["model"],
@@ -168,7 +193,19 @@ class SessionStore:
             history=[json.loads(message["payload_json"]) for message in messages],
             tool_state=tool_state,
             approved_command_prefixes=approved_prefixes,
+            approved_permission_scopes=approved_scopes,
             memory_enabled=bool(state["memory_enabled"]) if state else True,
+            context_checkpoints=checkpoints,
+            **(
+                {"context_branch_id": branch_id}
+                if isinstance(branch_id, str) and branch_id
+                else {}
+            ),
+            context_generation=(
+                generation
+                if isinstance(generation, int) and generation >= 0
+                else 0
+            ),
             running=True,
         )
 

@@ -1,8 +1,7 @@
 import json
-import shlex
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from pathlib import Path
 from openai import OpenAIError
@@ -16,6 +15,17 @@ from src.infrastructure.model_provider import Provider
 from src.infrastructure.retry import request_with_retry
 from src.prompts import TODO_REMINDER
 from src.runtime.session import Session
+from src.runtime.approval import (
+    ApprovalRequestRecord,
+    ApprovalResponse,
+    ApprovalRuntime,
+    ApprovalSource,
+)
+from src.runtime.permissions import PermissionDecision, PermissionPolicy
+from src.runtime.context_rewind import (
+    ContextCheckpointManager,
+    ContextRewindResult,
+)
 from src.tools.base import ToolContext
 from src.tools.todo_manager.todo_manager import (
     TODO_STATE_KEY,
@@ -25,7 +35,6 @@ from src.tools.todo_manager.todo_manager import (
 )
 from src.tools.toolset import ToolSet
 from src.ui.console import ConsoleRenderer
-from src.utils.shell import READONLY_PREFIXES, is_readonly_command, shell_tokens
 from src.utils.terminal import ESCAPE, read_confirmation
 
 
@@ -48,7 +57,6 @@ class AgentRunResult:
 class AgentRunner:
     MAX_TRUNCATION_CONTINUATIONS = 3
     TRUNCATION_MAX_TOKENS_MULTIPLIER = 8
-    SAFE_BASH_PREFIXES = READONLY_PREFIXES
 
     def __init__(
         self,
@@ -59,6 +67,9 @@ class AgentRunner:
         todo_reminder_interval: int = 3,
         max_history_messages: int = 50,
         renderer: ConsoleRenderer | None = None,
+        approval_runtime: ApprovalRuntime | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        context_checkpoint_manager: ContextCheckpointManager | None = None,
     ) -> None:
         if todo_reminder_interval < 1:
             raise ValueError("todo_reminder_interval must be at least 1")
@@ -74,6 +85,11 @@ class AgentRunner:
         self.todo_reminder_interval = todo_reminder_interval
         self.max_history_messages = max_history_messages
         self.renderer = renderer or ConsoleRenderer()
+        self.approval_runtime = approval_runtime or ApprovalRuntime()
+        self.permission_policy = permission_policy or PermissionPolicy(self.workdir)
+        self.context_checkpoint_manager = (
+            context_checkpoint_manager or ContextCheckpointManager(self.workdir)
+        )
         self._permission_interrupted = False
 
     def run(
@@ -89,16 +105,37 @@ class AgentRunner:
         tool_context: ToolContext | None = None,
         stop_after_tool: Callable[[str, dict[str, Any]], bool] | None = None,
         continue_after_tool: Callable[[str, dict[str, Any]], bool] | None = None,
+        on_context_rewound: (
+            Callable[[Session, ContextRewindResult], None] | None
+        ) = None,
     ) -> AgentRunResult:
         self._permission_interrupted = False
+        session.pending_context_rewind = None
         tools = toolset.schemas()
+        rewind_enabled = any(
+            isinstance(schema, dict)
+            and isinstance(schema.get("function"), dict)
+            and schema["function"].get("name") == "rewind_context"
+            for schema in tools
+        )
         iterations_since_todo_update = 0
+        turn_approved_scopes: set[str] = set()
 
-        for _ in range(self.max_tool_iterations):
+        for iteration in range(self.max_tool_iterations):
             if before_model_request is not None:
                 before_model_request(session)
             self._inject_background_events(session, toolset)
             self._apply_message_limit(session)
+            if rewind_enabled:
+                try:
+                    self.context_checkpoint_manager.create_checkpoint(
+                        session,
+                        reason=f"model_step_{iteration + 1}",
+                    )
+                except (OSError, TypeError, ValueError):
+                    # A new checkpoint write failure must not stop the primary
+                    # loop; older validated checkpoints may remain available.
+                    pass
             effective_system_prompt = system_prompt
             todo_tasks = get_todo_tasks(session)
             if (
@@ -114,6 +151,12 @@ class AgentRunner:
                     f"{system_prompt}\n\n{reminder}"
                 )
                 iterations_since_todo_update = 0
+            if rewind_enabled:
+                rewind_prompt = self.context_checkpoint_manager.prompt(session)
+                if rewind_prompt:
+                    effective_system_prompt = (
+                        f"{effective_system_prompt}\n\n{rewind_prompt}"
+                    )
 
             self.renderer.start_thinking()
             try:
@@ -169,7 +212,12 @@ class AgentRunner:
 
             todo_updated = False
             effective_tool_context = tool_context or ToolContext(session=session)
+            mixed_rewind_batch = len(tool_calls) > 1 and any(
+                tool_call.function.name == "rewind_context"
+                for tool_call in assistant_message.tool_calls
+            )
             for tool_call in assistant_message.tool_calls:
+                response: ApprovalResponse | None = None
                 tool_name = tool_call.function.name
                 arguments_json = tool_call.function.arguments
                 if on_tool_requested is not None:
@@ -186,11 +234,39 @@ class AgentRunner:
                 if not isinstance(permission_args, dict):
                     permission_args = {}
 
-                permission_reason, hard_denied = self._check_permission(
+                if tool_name == "rewind_context" and mixed_rewind_batch:
+                    output = {
+                        "ok": False,
+                        "error": (
+                            "rewind_context must be the sole tool call in its "
+                            "model step so every external effect is represented "
+                            "in carry_forward."
+                        ),
+                    }
+                    if on_tool_result is not None:
+                        on_tool_result(tool_name, output)
+                    session.history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps(output, ensure_ascii=False),
+                        }
+                    )
+                    continue
+
+                permission = self.permission_policy.evaluate(
                     tool_name,
                     permission_args,
                     session=session,
                 )
+                if (
+                    permission.scope_key
+                    and permission.scope_key in turn_approved_scopes
+                    and permission.outcome == "require_approval"
+                ):
+                    permission = replace(permission, outcome="allow")
+                permission_reason = permission.reason
+                hard_denied = permission.outcome == "deny"
                 if hard_denied:
                     self._print_permission_decision(
                         tool_name,
@@ -201,26 +277,48 @@ class AgentRunner:
                     allowed = False
                 elif permission_reason is None:
                     allowed = True
-                elif confirm_permission is not None:
-                    allowed = confirm_permission(tool_name, arguments_json)
+                elif permission.outcome == "allow":
+                    allowed = True
                 else:
-                    allowed = self._ask_user(
-                        tool_name,
-                        permission_args,
-                        permission_reason,
+                    response = self._request_approval(
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_name,
+                        args=permission_args,
+                        arguments_json=arguments_json,
+                        permission=permission,
                         session=session,
+                        context=effective_tool_context,
+                        confirm_permission=confirm_permission,
                     )
+                    allowed = response.approved
+                    if response.decision == "approve_turn" and permission.scope_key:
+                        turn_approved_scopes.add(permission.scope_key)
+                    if response.decision == "approve_session" and permission.scope_key:
+                        session.approved_permission_scopes.add(permission.scope_key)
 
                 if allowed:
+                    capabilities = effective_tool_context.granted_capabilities
+                    if permission.capability:
+                        capabilities = capabilities.union({permission.capability})
+                    dispatch_context = replace(
+                        effective_tool_context,
+                        granted_capabilities=capabilities,
+                    )
                     output = toolset.dispatch(
                         tool_name,
                         arguments_json,
-                        context=effective_tool_context,
+                        context=dispatch_context,
                     )
                 else:
+                    feedback = ""
+                    if not hard_denied and response is not None:
+                        feedback = response.feedback.strip()
                     output = {
                         "ok": False,
-                        "error": f"Permission denied: {permission_reason}",
+                        "error": (
+                            f"Permission denied: {permission_reason}"
+                            + (f". User feedback: {feedback}" if feedback else "")
+                        ),
                     }
                 if tool_name == TODO_STATE_KEY and output.get("ok"):
                     todo_updated = True
@@ -237,6 +335,7 @@ class AgentRunner:
                 )
 
                 if self._permission_interrupted:
+                    session.pending_context_rewind = None
                     self._compact_after_round(session)
                     return AgentRunResult(
                         ok=True,
@@ -251,10 +350,12 @@ class AgentRunner:
                         else False
                     )
                     if not should_continue:
+                        session.pending_context_rewind = None
                         self._compact_after_round(session)
                         return AgentRunResult(ok=True, content=None)
 
                 if hard_denied or not allowed:
+                    session.pending_context_rewind = None
                     summary = self._request_permission_summary(
                         session=session,
                         system_prompt=effective_system_prompt,
@@ -271,6 +372,34 @@ class AgentRunner:
                         content=summary,
                         stopped_by_permission=True,
                     )
+            if rewind_enabled and session.pending_context_rewind is not None:
+                try:
+                    rewind_result = self.context_checkpoint_manager.apply_pending(
+                        session
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    session.pending_context_rewind = None
+                    session.history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[Context rewind failed; the current history was "
+                                f"preserved. Error: {exc}]"
+                            ),
+                        }
+                    )
+                else:
+                    if rewind_result is not None:
+                        if on_context_rewound is not None:
+                            try:
+                                on_context_rewound(session, rewind_result)
+                            except Exception:
+                                # Cache invalidation and UI callbacks are advisory;
+                                # the already-applied rewind remains authoritative.
+                                pass
+                        self._compact_after_round(session)
+                        iterations_since_todo_update = 0
+                        continue
 
             self._compact_after_round(session)
 
@@ -505,116 +634,12 @@ class AgentRunner:
             max_messages=self.max_history_messages,
         )
 
-    DENY_LIST = [
-        "rm -rf /",
-        "sudo",
-        "shutdown",
-        "reboot",
-        "mkfs",
-        "dd if=",
-        "> /dev/sda",
-    ]
-
-
-    def _check_deny_list(self, args: dict[str, Any]) -> str | None:
-        command = args.get("command", "")
-        if not isinstance(command, str):
-            return "Command must be a string"
-
-        normalized = " ".join(command.lower().split())
-        for pattern in self.DENY_LIST:
-            if pattern in normalized:
-                return f"Blocked '{pattern}' is on the deny list"
-        return None
-
-    PERMISSION_RULES = [
-        {
-            "tools": {"read_file", "write_file", "edit_file"},
-            "check": "_path_outside_workspace",
-            "message": "Path is outside the workspace",
-        },
-    ]
-
-    def _path_outside_workspace(self, args: dict[str, Any]) -> bool:
-        file_path = args.get("file_path", "")
-        target = (self.workdir / file_path).resolve()
-        return not target.is_relative_to(self.workdir)
-
-    def _check_rules(self, tool_name: str, args: dict[str, Any]) -> str | None:
-        for rule in self.PERMISSION_RULES:
-            if tool_name not in rule["tools"]:
-                continue
-            # 在self对象上找到 rule["check"]名称的方法
-            checker = getattr(self, rule["check"])
-            if checker(args):
-                return rule["message"]
-
-        return None
-
     @staticmethod
     def _permission_target(args: dict[str, Any]) -> str:
         command = args.get("command")
         if isinstance(command, str):
             return command
         return json.dumps(args, ensure_ascii=False)
-
-    @classmethod
-    def _command_prefix(cls, command: str) -> tuple[str, ...]:
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            return ()
-        if not tokens:
-            return ()
-        return tuple(tokens[:2]) if len(tokens) > 1 else (tokens[0],)
-
-    @classmethod
-    def _contains_shell_operator(cls, command: str) -> bool:
-        return not is_readonly_command(command)
-
-    def _command_stays_in_workspace(
-        self,
-        args: dict[str, Any],
-        tokens: list[str],
-    ) -> bool:
-        cwd = args.get("cwd", ".")
-        if not isinstance(cwd, str):
-            return False
-        target = (self.workdir / cwd).resolve()
-        if not target.is_relative_to(self.workdir):
-            return False
-
-        for token in tokens[1:]:
-            if token == "/dev/null":
-                continue
-            path = Path(token)
-            if path.is_absolute() or ".." in path.parts:
-                return False
-        return True
-
-    def _is_auto_allowed_bash(
-        self,
-        args: dict[str, Any],
-        session: Session | None,
-    ) -> bool:
-        command = args.get("command", "")
-        if not isinstance(command, str):
-            return False
-        tokens = shell_tokens(command)
-        if not tokens:
-            return False
-        if not tokens or not self._command_stays_in_workspace(args, tokens):
-            return False
-
-        prefix = self._command_prefix(command)
-        if session is not None and prefix in session.approved_command_prefixes:
-            return True
-        if not is_readonly_command(command):
-            return False
-        return any(
-            tuple(tokens[:len(allowed_prefix)]) == allowed_prefix
-            for allowed_prefix in self.SAFE_BASH_PREFIXES
-        )
 
     def _print_permission_decision(
         self,
@@ -626,9 +651,6 @@ class AgentRunner:
         scope: str | None = None,
     ) -> None:
         target = self._permission_target(args)
-        suffix = f" ({reason})" if reason else ""
-        scope_suffix = f" [{scope}]" if scope else ""
-        decision = "Allowed" if allowed else "Denied"
         self.renderer.permission_decision(
             tool_name,
             target,
@@ -637,30 +659,16 @@ class AgentRunner:
             reason=reason,
         )
 
-    def _ask_user(
+    def _prompt_for_approval(
         self,
-        tool_name: str,
-        args: dict[str, Any],
-        _reason: str,
-        session: Session | None = None,
-    ) -> bool:
-        question = self.renderer.permission_question(tool_name)
-
+        request: ApprovalRequestRecord,
+    ) -> ApprovalResponse:
+        question = self.renderer.permission_question(request.tool_name)
         answer, raw_tty = read_confirmation(question)
-
-        allowed = answer in {"y", "yes", "a", "allow", "always"}
-        session_scope = answer in {"a", "allow", "always"}
-        if session_scope and session is not None:
-            command = args.get("command")
-            if isinstance(command, str):
-                prefix = self._command_prefix(command)
-                if prefix:
-                    session.approved_command_prefixes.add(prefix)
         if raw_tty:
             sys.stdout.write("\n")
             sys.stdout.flush()
         elif sys.stdin.isatty() and sys.stdout.isatty():
-            # input() has moved to the next line; erase its prompt and answer.
             self.renderer.clear_input_line()
 
         if answer == ESCAPE:
@@ -668,15 +676,88 @@ class AgentRunner:
             self.renderer.show_notice(
                 "Permission prompt interrupted. Returning to the user prompt."
             )
-            return False
+            return ApprovalResponse("reject", "User interrupted the approval prompt")
 
+        decisions = {
+            "y": "approve_once",
+            "yes": "approve_once",
+            "t": "approve_turn",
+            "turn": "approve_turn",
+            "a": "approve_session",
+            "allow": "approve_session",
+            "always": "approve_session",
+        }
+        decision = decisions.get(answer, "reject")
+        response = ApprovalResponse(decision)  # type: ignore[arg-type]
+        scope = {
+            "approve_once": "once",
+            "approve_turn": "turn",
+            "approve_session": "session",
+            "reject": "once",
+        }[response.decision]
         self._print_permission_decision(
-            tool_name,
-            args,
-            allowed=allowed,
-            scope="session" if session_scope else "once",
+            request.tool_name,
+            self._approval_arguments(request.arguments_json),
+            allowed=response.approved,
+            scope=scope,
+            reason=None if response.approved else request.reason,
         )
-        return allowed
+        return response
+
+    @staticmethod
+    def _approval_arguments(arguments_json: str) -> dict[str, Any]:
+        try:
+            value = json.loads(arguments_json)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _request_approval(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        arguments_json: str,
+        permission: PermissionDecision,
+        session: Session,
+        context: ToolContext,
+        confirm_permission: Callable[[str, str], bool] | None,
+    ) -> ApprovalResponse:
+        source = ApprovalSource(
+            kind=context.approval_source_kind,
+            session_id=session.session_id,
+            agent_id=context.agent_id,
+            task_id=context.task_id,
+            interactive=context.approval_interactive,
+        )
+        request = self.approval_runtime.create_request(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            arguments_json=arguments_json,
+            reason=permission.reason or "Approval required",
+            preview=self._permission_target(args),
+            scope_key=permission.scope_key,
+            capability=permission.capability,
+            source=source,
+        )
+        if context.approval_interactive:
+            try:
+                if confirm_permission is not None:
+                    response = ApprovalResponse(
+                        "approve_once"
+                        if confirm_permission(tool_name, arguments_json)
+                        else "reject"
+                    )
+                else:
+                    response = self._prompt_for_approval(request)
+            except Exception as exc:
+                response = ApprovalResponse(
+                    "reject",
+                    f"Approval handler failed: {type(exc).__name__}",
+                )
+            self.approval_runtime.resolve(request.id, response)
+        return self.approval_runtime.wait_for_response(request.id)
 
     def _check_permission(
         self,
@@ -684,17 +765,7 @@ class AgentRunner:
         args: dict[str, Any],
         session: Session | None = None,
     ) -> tuple[str | None, bool]:
-        # L1 高危命令硬拒绝，不进入用户确认流程。
-        if name == "run_bash":
-            reason = self._check_deny_list(args)
-            if reason:
-                return reason, True
-
-            if self._is_auto_allowed_bash(args, session):
-                return None, False
-
-            # 未命中严格只读 allowlist，或包含 shell 语法时必须确认。
-            return "Shell command execution requires permission", False
-
-        # L2 规则过滤
-        return self._check_rules(name, args), False
+        decision = self.permission_policy.evaluate(name, args, session=session)
+        if decision.outcome == "allow":
+            return None, False
+        return decision.reason, decision.outcome == "deny"

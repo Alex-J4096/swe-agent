@@ -4,6 +4,7 @@ from src.prompts import SUBAGENT
 from src.runtime.agent_runner import AgentRunResult, AgentRunner
 from src.runtime.session import Session
 from src.tools.toolset import ToolSet
+from src.tools.base import ToolContext
 
 
 class SubagentService:
@@ -28,6 +29,11 @@ class SubagentService:
             session=session,
             toolset=self.toolset,
             system_prompt=self._build_system_prompt(),
+            tool_context=ToolContext(
+                session=session,
+                approval_source_kind="subagent",
+                approval_interactive=True,
+            ),
         )
 
     def _build_system_prompt(self) -> str:

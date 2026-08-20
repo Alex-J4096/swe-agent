@@ -281,6 +281,7 @@ class MemoryStoreTests(unittest.TestCase):
             def extract_memories(
                 self,
                 messages: list[dict[str, str]],
+                should_commit=None,
             ) -> list[Memory]:
                 self.received.append(messages)
                 self.steps.append("extract")
@@ -301,6 +302,41 @@ class MemoryStoreTests(unittest.TestCase):
 
         self.assertEqual(store.received[0][0]["content"], "original")
         self.assertEqual(store.steps, ["extract", "consolidate"])
+
+    def test_memory_worker_invalidates_running_branch_before_commit(self) -> None:
+        from threading import Event
+
+        started = Event()
+        release = Event()
+
+        class FakeStore:
+            def __init__(self) -> None:
+                self.committed = False
+                self.consolidated = False
+
+            def extract_memories(self, messages, should_commit=None):
+                started.set()
+                release.wait(timeout=2)
+                if should_commit is None or should_commit():
+                    self.committed = True
+                return []
+
+            def consolidate_memories(self):
+                self.consolidated = True
+                return []
+
+        store = FakeStore()
+        worker = MemoryWorker(store)  # type: ignore[arg-type]
+        future = worker.submit([{"role": "user", "content": "old branch"}])
+        self.assertTrue(started.wait(timeout=2))
+
+        worker.invalidate()
+        release.set()
+        future.result(timeout=2)
+        worker.shutdown(wait=True)
+
+        self.assertFalse(store.committed)
+        self.assertFalse(store.consolidated)
 
     def test_selection_cache_accepts_history_extensions(self) -> None:
         cache = MemorySelectionCache()

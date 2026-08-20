@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -180,6 +180,18 @@ class AppDatabase:
                 "INTEGER NOT NULL DEFAULT 1"
             )
             self.connection.execute("PRAGMA user_version = 3")
+        if current_version < 4:
+            self.connection.execute(
+                "ALTER TABLE session_state ADD COLUMN approved_scopes_json "
+                "TEXT NOT NULL DEFAULT '[]'"
+            )
+            self.connection.execute("PRAGMA user_version = 4")
+        if current_version < 5:
+            self.connection.execute(
+                "ALTER TABLE session_state ADD COLUMN context_state_json "
+                "TEXT NOT NULL DEFAULT '{}'"
+            )
+            self.connection.execute("PRAGMA user_version = 5")
         self.connection.commit()
 
     @contextmanager

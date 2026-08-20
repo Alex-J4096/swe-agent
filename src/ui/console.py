@@ -366,7 +366,10 @@ class ConsoleRenderer:
         )
 
     def permission_question(self, tool_name: str) -> str:
-        question = f"  ? Allow {tool_name}? [y] once / [a] session / [n] deny "
+        question = (
+            f"  ? Allow {tool_name}? "
+            "[y] once / [t] turn / [a] session / [n] deny "
+        )
         return self._paint(question, self.theme.warning)
 
     def team_plan_continue_question(self) -> str:

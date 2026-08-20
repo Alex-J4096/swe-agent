@@ -22,6 +22,8 @@ from src.runtime.memory_selection_worker import MemorySelectionWorker
 from src.infrastructure.model_provider import Provider
 from src.prompts import SYSTEM
 from src.runtime.agent_runner import AgentRunner
+from src.runtime.approval import ApprovalRuntime, ApprovalRuntimeEvent
+from src.runtime.context_rewind import ContextRewindResult
 from src.runtime.session import Session
 from src.teams.controller import TeamController
 from src.tools.base import ToolContext
@@ -278,13 +280,43 @@ def main() -> None:
         memory_store,
         memory_selection_cache,
     )
+
+    def handle_context_rewind(
+        current_session: Session,
+        result: ContextRewindResult,
+    ) -> None:
+        memory_selection_cache.clear(current_session.session_id)
+        memory_worker.invalidate()
+        memory_selection_worker.invalidate()
+        try:
+            transcript = result.transcript_path.relative_to(workdir).as_posix()
+        except ValueError:
+            transcript = result.transcript_path.as_posix()
+        renderer.show_notice(
+            f"Context rewound to {result.checkpoint_id}; discarded "
+            f"{result.discarded_messages} messages. Abandoned branch: {transcript}"
+        )
+
     toolset = ToolSet()
+    approval_runtime = ApprovalRuntime()
+
+    def show_approval_event(event: ApprovalRuntimeEvent) -> None:
+        request = event.request
+        if event.kind == "request_created" and not request.source.interactive:
+            renderer.show_notice(
+                f"Approval required ({request.id}) from "
+                f"{request.source.agent_id or request.source.kind}: {request.preview}. "
+                "Use /permissions to inspect or resolve it."
+            )
+
+    approval_runtime.subscribe(show_approval_event)
     runner = AgentRunner(
         provider=provider,
         workdir=workdir,
         max_tokens=MAX_TOKENS,
         max_tool_iterations=MAX_TOOL_ITERATIONS,
         renderer=renderer,
+        approval_runtime=approval_runtime,
     )
 
     team_controller = TeamController(
@@ -297,9 +329,11 @@ def main() -> None:
             max_tokens=MAX_TOKENS,
             max_tool_iterations=MAX_TOOL_ITERATIONS,
             renderer=renderer,
+            approval_runtime=approval_runtime,
         ),
         model_getter=lambda: session.model,
         worker_count=2,
+        approval_runtime=approval_runtime,
     )
 
     subagent_toolset = toolset.view(exclude={"delegate_task"})
@@ -319,6 +353,7 @@ def main() -> None:
         memory_selection_cache=memory_selection_cache,
         team_controller=team_controller,
         database=database,
+        approval_runtime=approval_runtime,
         on_provider_changed=lambda active_provider: setattr(
             memory_store,
             "client",
@@ -448,6 +483,7 @@ def main() -> None:
                 if team_runtime is not None
                 else None
             ),
+            on_context_rewound=handle_context_rewind,
         )
         save_session_if_needed(session_store, session, workdir)
 
@@ -466,6 +502,8 @@ def main() -> None:
                 session.history,
             )
 
+    team_controller.shutdown()
+    approval_runtime.cancel_source(reason="Application shutdown")
     memory_worker.shutdown(wait=False)
     memory_selection_worker.shutdown(wait=False)
     save_session_if_needed(session_store, session, workdir)

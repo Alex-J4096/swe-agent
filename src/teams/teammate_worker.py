@@ -164,6 +164,8 @@ class TeammateWorker:
             agent_id=self.agent_id,
             task_id=task.task_id,
             workspace_root=workspace_root,
+            approval_source_kind="team",
+            approval_interactive=False,
         )
 
         def before_model_request(current_session: Session) -> None:
@@ -181,17 +183,22 @@ class TeammateWorker:
             before_model_request=before_model_request,
             tool_context=context,
         )
-        if result.ok:
+        if result.ok and not result.stopped_by_permission:
             self.runtime.board.complete(
                 task.task_id,
                 task.claim_token or "",
                 result={"ok": True, "content": result.content},
             )
         else:
+            failure = (
+                "Task stopped because a required permission was denied"
+                if result.stopped_by_permission
+                else (result.error or "teammate run failed")
+            )
             self.runtime.board.fail(
                 task.task_id,
                 task.claim_token or "",
-                result.error or "teammate run failed",
+                failure,
             )
         self.runtime.send(
             recipient_id=self.runtime.lead_id,
@@ -199,9 +206,13 @@ class TeammateWorker:
             kind=EventKind.task_result,
             payload={
                 "task_id": task.task_id,
-                "ok": result.ok,
+                "ok": result.ok and not result.stopped_by_permission,
                 "content": result.content,
-                "error": result.error,
+                "error": (
+                    "Task stopped because a required permission was denied"
+                    if result.stopped_by_permission
+                    else result.error
+                ),
             },
         )
         self.runtime.set_member_state(self.agent_id, AgentState.idle)

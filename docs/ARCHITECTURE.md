@@ -164,11 +164,13 @@ else:
 
 ### 数据库迁移和一致性
 
-`AppDatabase` 使用 `PRAGMA user_version` 管理 schema，当前版本为 3：
+`AppDatabase` 使用 `PRAGMA user_version` 管理 schema，当前版本为 5：
 
 - v1：Provider、Model、Session、消息和 Session 状态。
 - v2：Provider Credential。
 - v3：Session 的 `memory_enabled` 开关。
+- v4：Session 级结构化 permission scope。
+- v5：checkpoint、branch 和 context generation 状态。
 
 打开数据库时：
 
@@ -351,6 +353,7 @@ run_bash
 read_file
 write_file
 edit_file
+rewind_context
 todo_manager
 task_manager
 background_task
@@ -442,7 +445,7 @@ Permission 在 `ToolSet.dispatch()` 之前运行。Runner 从原始参数 JSON �
 1. 模型是否有权看到和调用该 Tool？由 ToolSet 视图决定。
 2. 调用在什么条件下可以执行？由 Permission 和 Tool 内部边界决定。
 
-当前 Permission 只特殊处理 Bash 和 workspace 外文件路径。其他新工具默认不会触发额外确认，因此任何可能写文件、访问网络、发送消息或修改外部状态的新工具都必须显式增加权限规则，并在 Tool 内再次验证不可跨越的安全边界。
+`PermissionPolicy` 对内置 Tool 显式分类；未分类的动态扩展 Tool 默认要求审批，而不是自动允许。新增 Tool 时仍应加入明确分类，并在 Tool 内再次验证不可跨越的安全边界。Shell 的实际副作用另外受 OS sandbox 限制。
 
 Permission 拒绝与 Tool 执行失败语义不同：拒绝会停止当前 Agent 工具循环；普通 Tool 失败会作为结果返回模型，模型可以修正参数后继续调用。
 
@@ -455,7 +458,7 @@ Permission 拒绝与 Tool 执行失败语义不同：拒绝会停止当前 Agent
 3. 实现同步 `run(args, context)`，返回稳定、可 JSON 序列化的结果字典。
 4. 通过构造函数注入外部依赖，不在 Tool 中读取宿主全局状态。
 5. 在默认 `ToolSet` 或应用装配阶段注册实例。
-6. 为有副作用的操作增加 Permission 规则和 Tool 内部安全校验。
+6. 为有副作用的操作增加 Permission 分类、所需 capability 和 Tool 内部安全校验。
 7. 检查主 Agent、子代理和其他 ToolSet 视图应该看到还是排除该工具。
 8. 添加 schema、参数错误、成功、失败、权限和视图隔离测试。
 
@@ -661,7 +664,7 @@ toolset.register(
 
 - `Session.history`。
 - `Session.tool_state`。
-- Session 级 Bash 授权。
+- Session 级 permission scope。
 - 父 Agent 的 Memory 上下文和动态 SYSTEM。
 
 ToolSet 视图排除 `delegate_task`，因此该工具不会出现在子 Agent schema 中；即使模型伪造调用，dispatch 也返回 `Tool not found`。
@@ -740,15 +743,15 @@ sequenceDiagram
 - 子 Agent 执行的 Bash 命令作用于同一项目目录。
 - 子 Agent 加载 Skill 只改变自己的历史，不会把 Skill 正文复制到父历史。
 
-因此 Subagent 提供的是 Context isolation，而不是 filesystem、process 或 security isolation。父 Agent 只能委派允许子 Agent 在共享 workspace 中实际执行的任务。
+因此 Subagent 提供 Context isolation；Shell 进程本身受 OS sandbox 约束，但文件修改仍直接作用于共享 workspace。父 Agent 只能委派允许子 Agent在该 workspace 中实际执行的任务。
 
 ### Permission 行为
 
-子 Agent 复用同一个 Runner，所以 Bash 和文件工具仍经过相同 Permission 检查及工具内部 workspace 校验。但是子 Session 的 `approved_command_prefixes` 初始为空，不继承父 Session 的授权。
+子 Agent 复用同一个 Runner 和 `ApprovalRuntime`，所以 Bash 和文件工具仍经过相同 Permission、sandbox 及工具内部 workspace 校验。子 Session 的 `approved_permission_scopes` 初始为空，不继承父 Session 的授权。
 
-`SubagentService.run()` 没有传入自定义 `confirm_permission` callback。需要确认的 Bash 命令会进入 Runner 的默认终端确认流程；用户给出的 Session 级授权只写入临时子 Session，委派结束后不会持久化。
+同步 Subagent 仍运行在 root 交互线程，因此需要能力升级时由 root 终端直接确认；Session 级授权只写入临时子 Session，委派结束后不会持久化。Team worker 则不会读取 stdin，而是把请求放入统一 pending 队列。
 
-Skill 或子任务文本都不能绕过 ToolSet 排除、Permission 硬拒绝和具体 Tool 的安全边界。与此同时，允许执行并不代表隔离执行：用户一旦批准，副作用仍发生在共享 workspace。
+Skill 或子任务文本都不能绕过 ToolSet 排除、Permission 硬拒绝、Shell sandbox 和具体 Tool 的安全边界。批准网络能力只会开启 sandbox 网络，不会开放宿主写权限或敏感环境变量。
 
 ### 结果回传
 
@@ -839,7 +842,8 @@ Skill 或子任务文本都不能绕过 ToolSet 排除、Permission 硬拒绝和
 
 核心实现位于：
 
-- `src/runtime/agent_runner.py`：模型与工具循环、权限决策、上下文自动压缩和后台事件注入。
+- `src/runtime/agent_runner.py`：模型与工具循环、权限决策、checkpoint 安全回退、上下文自动压缩和后台事件注入。
+- `src/runtime/context_rewind.py`：checkpoint 快照、branch 归档、完整性校验和 history 恢复。
 - `src/runtime/session.py`：本轮执行所操作的会话状态。
 - `src/tools/toolset.py`：工具 schema 暴露、参数校验和实际分发。
 - `main.py`：构造 SYSTEM、调用 Runner、展示结果和持久化 Session。
@@ -856,6 +860,7 @@ runner.run(
     on_tool_requested=...,
     confirm_permission=...,
     on_tool_result=...,
+    on_context_rewound=...,
 )
 ```
 
@@ -883,18 +888,20 @@ AgentRunResult(
 
 1. 注入属于当前 Session、尚未确认的后台任务终态事件。
 2. 对 `session.history` 应用消息数量限制。
-3. 如果 Todo 长时间未更新，将 Todo reminder 临时追加到本次 SYSTEM。
-4. 调用模型，必要时执行输出截断恢复。
-5. 将 assistant 消息追加到 `session.history`。
-6. 如果没有工具调用，执行自动压缩并结束本轮。
-7. 如果存在工具调用，逐个执行权限检查、工具分发并追加对应的 tool 消息。
-8. 一批工具处理完成后压缩历史，再进入下一次模型请求。
+3. 如果 ToolSet 暴露 `rewind_context`，创建 checkpoint 并把最近 ID 临时追加到 SYSTEM。
+4. 如果 Todo 长时间未更新，将 Todo reminder 临时追加到本次 SYSTEM。
+5. 调用模型，必要时执行输出截断恢复。
+6. 将 assistant 消息追加到 `session.history`。
+7. 如果没有工具调用，执行自动压缩并结束本轮。
+8. 如果存在工具调用，逐个执行权限检查、工具分发并追加对应的 tool 消息。
+9. 一批工具处理完成后，先在安全点应用 pending context rewind，再压缩历史并进入下一次模型请求。
 
 ```mermaid
 flowchart TD
     A[进入 AgentRunner.run] --> B[注入后台任务事件]
     B --> C[限制历史消息数量]
-    C --> D[按需追加 Todo reminder]
+    C --> C2[创建 checkpoint 并注入可用 ID]
+    C2 --> D[按需追加 Todo reminder]
     D --> E[请求模型]
     E --> F{模型请求成功?}
     F -->|否| G[返回 ok=false]
@@ -909,7 +916,10 @@ flowchart TD
     M -->|否| P[追加 tool 结果]
     P --> Q{本批调用完成?}
     Q -->|否| L
-    Q -->|是| R[自动压缩历史]
+    Q -->|是| Q2{存在 pending rewind?}
+    Q2 -->|是| Q3[归档 branch 并恢复 checkpoint]
+    Q3 --> B
+    Q2 -->|否| R[自动压缩历史]
     R --> B
 ```
 
@@ -950,76 +960,50 @@ continuation 请求要求模型从中断位置继续且不要重复。最终文�
 
 ## Permission
 
-Permission 层位于模型产生工具调用和工具真正执行之间，目标是阻止明确危险的 Bash 命令、自动放行可证明安全的只读命令，并让其他命令由用户决定是否执行。
+Permission 不再为所有非只读 Shell 命令逐条确认。它判断调用是否能在现有 sandbox 能力内执行，只有能力升级、破坏性操作和未分类扩展工具进入人工审批。
 
-权限判断返回：
-
-```python
-tuple[str | None, bool]
-```
-
-| `reason` | `hard_denied` | 行为 |
-| --- | --- | --- |
-| `None` | `False` | 自动执行 |
-| 非空 | `False` | 请求用户确认 |
-| 非空 | `True` | 直接拒绝，不允许确认覆盖 |
-
-### Bash 四层决策
-
-Bash 按固定优先级检查：
-
-1. **硬拒绝**：规范化命令的空白和大小写后，检查 `DENY_LIST` 子串，例如 `sudo`、`shutdown`、`mkfs` 和 `rm -rf /`。命中后直接拒绝。
-2. **语法和路径约束**：包含 shell 操作符、换行、绝对路径、`..` 路径或 workspace 外 `cwd` 的命令不能自动执行。
-3. **自动允许或 Session 授权**：严格只读前缀或当前 Session 已授权的命令前缀可以自动执行。
-4. **用户确认**：其余命令询问用户，仅本次允许、在当前 Session 允许或拒绝。
-
-自动允许的 Bash 前缀当前为：
-
-```text
-pwd
-ls
-rg
-grep
-head
-tail
-wc
-git status
-git diff
-git log
-```
-
-仅命中前缀还不够。命令必须能被 `shlex.split()` 正确解析，不包含以下 shell 展开或组合字符，并且路径检查通过：
-
-```text
-| & ; > < ` $ ( ) { } * ? [ ] ~
-```
-
-因此 `git status` 可以自动执行，而 `git status && touch marker`、`rg "*.py"` 和 `ls > files.txt` 都需要确认。
-
-### Session 级命令授权
-
-用户选择 Session 级允许时，Runner 使用 `shlex.split()` 解析命令并保存前两个 token；只有一个 token 时保存一个。例如：
-
-```text
-npm install package-a  -> ("npm", "install")
-pytest                  -> ("pytest",)
-```
-
-授权保存在 `Session.approved_command_prefixes`，并由 `SessionStore` 写入 SQLite。因此它的作用域是逻辑 Session：切换到其他 Session 不共享，但同一 Session 在进程重启后通过 `/resume` 恢复时仍然有效。
-
-Session 授权不能覆盖硬拒绝、shell 操作符检查和 workspace 路径约束。例如授权 `npm install` 后，`npm install package-b` 可以自动执行，但 `npm install package-b && shutdown` 仍会被拦截。
-
-### 文件工具和纵深防御
-
-`read_file`、`write_file` 和 `edit_file` 的目标路径如果位于 workspace 外，Permission 层会要求确认。但用户确认不是最终安全边界：三个文件工具在实际执行时会再次解析路径并拒绝 workspace 逃逸。
-
-`BashTool` 同样会在执行前验证 `cwd`：
+权限判断返回 `PermissionDecision`：
 
 ```python
-workdir.is_relative_to(project_root)
+PermissionDecision(
+    outcome="allow" | "require_approval" | "deny",
+    reason="...",
+    risk="low" | "medium" | "high" | "critical",
+    capability="sandbox.network" | "workspace.destructive" | "tool.<name>",
+    scope_key="...",
+)
 ```
 
-这可以避免 `/project-secrets` 被错误识别成 `/project` 的子目录。Bash 当前仍使用 `shell=True`，Permission 层只是在应用层降低风险，不等价于操作系统沙箱。
+### Shell sandbox
+
+`BashTool` 通过 `CommandExecutor` 执行。默认 `SandboxedCommandExecutor` 在 macOS 使用 `sandbox-exec`，在 Linux 使用 `bubblewrap`；后端缺失时 fail-closed，不回退到宿主执行。
+
+默认 sandbox 允许写 workspace 和每次调用的私有临时目录，拒绝写宿主其他路径并关闭网络。子进程使用临时 HOME/XDG 目录和环境变量白名单，不继承 API key、云凭据或 SSH agent。常见敏感配置目录另外被拒绝读取。超时会终止整个进程组。
+
+Shell 仍由 `/bin/sh -lc` 解释，但解释发生在 sandbox 内。OS 层检查解析后的真实文件目标，因此通过 symlink 指向 workspace 外也不能获得写权限。
+
+### 风险决策
+
+| 类型 | 行为 |
+| --- | --- |
+| `sudo`、系统关机、设备写入等硬拒绝 | 直接拒绝 |
+| workspace 外 Bash cwd 或文件路径 | 直接拒绝 |
+| sandbox 内测试、构建、lint、format 和普通命令 | 自动执行 |
+| `curl`、`git push/pull`、安装依赖或 `network_access=true` | 请求 `sandbox.network` |
+| `rm`、`shred`、`git reset/clean/rebase` | 请求 `workspace.destructive` |
+| 未分类动态 Tool | 请求 `tool.<name>` |
+
+即使网络命令未被静态识别，sandbox 默认网络关闭；模型可以在后续调用中显式设置 `network_access=true` 请求升级。
+
+### 审批作用域和状态机
+
+`ApprovalRuntime` 统一保存 `pending / resolved / cancelled` 请求。请求包含 tool call、参数 preview、原因、capability、scope，以及 foreground/Subagent/Team source。`resolve()` 只接受 pending 请求，第一份响应获胜。
+
+交互式审批支持 once、当前 turn、当前 Session 和 reject。Session scope 由 capability、规范化命令族和 cwd 生成，并写入 `approved_permission_scopes`。旧 `approved_command_prefixes` 仅用于恢复历史 Session 的兼容读取；新批准不再产生粗粒度两 token 前缀。
+
+Team worker 创建请求后进入 `awaiting_approval`，自身不读取 stdin。root 使用 `/permissions` 列出、批准或拒绝请求；Team shutdown 定向取消相关请求并唤醒 worker。
+
+文件工具和 BashTool 仍在执行层再次解析路径并拒绝 workspace 逃逸。用户批准 capability 不能覆盖这些硬边界。
 
 ### 拒绝后的行为
 
@@ -1035,10 +1019,12 @@ workdir.is_relative_to(project_root)
 
 ### 扩展约束和当前限制
 
-- 新增有副作用的工具时，必须显式增加 Permission 规则；当前未知工具在 Permission 层默认没有额外限制。
+- 新增 Tool 时应显式加入 Permission 分类；未知扩展 Tool 默认要求审批。
 - 安全边界必须在具体工具中再次实现，不能只依赖 Runner 的检查。
-- `DENY_LIST` 当前是规范化后的子串匹配，可能同时产生误报和漏报；它不是 shell AST 或系统级隔离。
-- Session 级授权会持久化，但 `/clear` 当前只清空 history 和 `tool_state`，不会清空 `approved_command_prefixes`。
+- `DENY_LIST` 仍是规范化后的子串匹配，可能误报或漏报；宿主边界由 OS sandbox 提供。
+- Linux 需要安装 `bubblewrap`；其他无后端环境会拒绝 Shell。
+- Session scope 会持久化；`/permissions revoke <scope|all>` 用于显式撤销。
+- pending 审批仅保存在进程内，进程重启不恢复。
 - 多 tool call 消息在中途拒绝时，未执行调用尚未获得 cancelled tool 结果。
 
 ## Session
@@ -1052,7 +1038,12 @@ Session(
     history=[],
     tool_state={},
     approved_command_prefixes=set(),
+    approved_permission_scopes=set(),
     memory_enabled=True,
+    context_checkpoints=[],
+    context_branch_id="branch_<uuid>",
+    context_generation=0,
+    pending_context_rewind=None,
     running=True,
     provider_id=None,
 )
@@ -1067,8 +1058,13 @@ Session(
 | `provider_id` | 当前模型供应商 | 是 |
 | `history` | user、assistant 和 tool 消息链 | 是 |
 | `tool_state` | Todo、后台事件去重等工具运行状态 | 是 |
-| `approved_command_prefixes` | Session 级 Bash 授权 | 是 |
+| `approved_command_prefixes` | 旧 Session 的 Bash 前缀授权兼容数据 | 是 |
+| `approved_permission_scopes` | Session 级 capability scope | 是 |
 | `memory_enabled` | 是否为当前 Session 读取、维护和精筛 Memory | 是 |
+| `context_checkpoints` | 当前可回退 checkpoint 的稳定元数据 | 是 |
+| `context_branch_id` | 当前工作记忆分支 ID | 是 |
+| `context_generation` | 成功回退次数，用于标识分支变化 | 是 |
+| `pending_context_rewind` | 当前 tool step 等待安全点处理的回退请求 | 否 |
 | `running` | 主输入循环是否继续 | 否，加载时重置为 `True` |
 
 ### SQLite 持久化模型
@@ -1089,7 +1085,9 @@ session_state
 ├── session_id
 ├── tool_state_json
 ├── approved_prefixes_json
-└── memory_enabled
+├── approved_scopes_json
+├── memory_enabled
+└── context_state_json
 ```
 
 `payload_json` 保存完整消息对象，因此 assistant 的 `tool_calls` 和 tool 的 `tool_call_id` 不会因为拆列而丢失；`role` 和 `content` 列主要用于查询和展示。
@@ -1099,7 +1097,7 @@ session_state
 1. upsert Session 元数据并更新 `updated_at`。
 2. 删除该 Session 现有消息行。
 3. 按当前 `history` 顺序重新写入全部消息。
-4. upsert `tool_state`、命令授权和 `memory_enabled`。
+4. upsert `tool_state`、旧命令前缀、permission scope、`memory_enabled` 和 context state。
 
 这种策略简单地保证内存快照与数据库一致，但写入成本随历史长度线性增长，不适合超长会话或高频并发保存。SQLite 开启 foreign key、5 秒 busy timeout 和 WAL；当前仍是单进程本地状态库设计。
 
@@ -1129,9 +1127,11 @@ sequenceDiagram
 ### Session 命令语义
 
 - `/new [title]`：创建新 Session，并把共享的当前 Session 对象切换到新 ID 和新状态。
-- `/resume <id>`：从数据库加载完整历史、工具状态和命令授权，再覆盖当前 Session 对象；保持其他组件持有的对象引用有效。
-- `/clear`：清空 `history` 和 `tool_state`；如果 Session 已持久化则立即保存。它不会更换 Session ID，也不会清空命令授权。
+- `/resume <id>`：从数据库加载完整历史、工具状态和 permission scope，再覆盖当前 Session 对象；保持其他组件持有的对象引用有效。
+- `/clear`：清空 `history`、`tool_state` 和当前 checkpoint/branch 状态；如果 Session 已持久化则立即保存。它不会更换 Session ID，也不会清空授权。已有 checkpoint 和 branch JSONL 不自动删除。
+- `/permissions grants|revoke`：查看或撤销当前 Session 的 capability scope；`revoke all` 同时清理旧前缀。
 - `/memory on|off|status`：开启、关闭或查看当前 Session 的 Memory。开关会持久化；关闭时跳过当前轮 Memory 注入、后台精筛和回合结束后的 Memory 抽取。
+- `/status`：同时显示当前 context branch、active checkpoint 数量和 rewind generation，便于确认分支状态。
 - `/sessions`：按 `updated_at` 倒序列出 Session 摘要，不加载完整消息历史。
 
 Session 的 `workdir` 当前保存在数据库元数据和摘要中，但不是 `Session` dataclass 字段。恢复 Session 不会自动切换进程工作目录，实际工具边界仍由当前启动时的 workspace 决定。
@@ -1143,6 +1143,7 @@ Session 的 `workdir` 当前保存在数据库元数据和摘要中，但不是 
 - 保存时状态统一写为 `active`；当前尚未实现完整的 archived、running 或 background-waiting 状态机。
 - Session 对象不是线程安全容器。后台 worker 不直接修改 `history`，而是通过持久化事件在下一次 Runner 调用时注入。
 - `/compact` 修改内存中的 `history`，由后续保存点写入数据库；显式命令本身当前不直接调用 `SessionStore.save()`。
+- pending context rewind 只存在于内存；恢复 Session 时不会重新执行未完成的回退请求。
 
 ## Context 压缩
 
@@ -1215,6 +1216,82 @@ flowchart LR
 
 命令层最多连续尝试 3 次，成功后立即停止；三次均失败则触发本次 compact 的熔断并返回错误。底层模型请求还会对 429 和 529 使用统一重试策略。
 
+### 模型主动 checkpoint 回退
+
+`rewind_context` 提供与长期 Memory 分离的工作记忆分支能力。实现分为：
+
+- `src/runtime/context_rewind.py`：创建 checkpoint 快照、校验 digest、归档废弃 branch、恢复 history。
+- `src/tools/memory/rewind_context.py`：模型调用参数和结构化 carry-forward schema。
+- `src/runtime/agent_runner.py`：每个模型 step 前创建 checkpoint，并在完整工具批次结束后的安全点应用 pending 回退。
+
+Runner 只在 ToolSet 暴露 `rewind_context` 时创建 checkpoint。每个 checkpoint 使用全局不复用的 `cp_<uuid>` ID，快照原子写入：
+
+```text
+.swe-agent/context/<sha256(session-id)[:32]>/
+├── checkpoints/
+│   ├── cp_<uuid>.jsonl
+│   └── cp_<uuid>.jsonl
+└── branches/
+    └── branch_<uuid>.jsonl
+```
+
+Session 最多向模型暴露最近 8 个 checkpoint，并保存最近 32 个 active 元数据；更早的快照文件不会自动删除。checkpoint 记录包含 branch ID、消息数量、history digest、原因和创建时间。恢复时重新计算快照 digest，校验失败则保留当前 history，不执行部分回退。
+
+恢复 Session 时如果当前 workspace 中缺少对应 checkpoint 文件，该 ID 不会重新暴露给模型；Runner 会从当前 history 创建新的 checkpoint。这避免数据库恢复到另一个 workspace 后提供无法执行的回退点。
+
+工具参数中的 carry-forward 包含：
+
+```json
+{
+  "goal": "完整用户目标",
+  "completed": ["已完成工作"],
+  "files_changed": ["src/example.py"],
+  "external_effects": ["不会被回退的命令、网络、审批、消息或任务"],
+  "discoveries": ["关键发现和证据"],
+  "failed_approaches": ["不要重复的方案及原因"],
+  "next_steps": ["接下来的动作"],
+  "long_term_candidates": ["可能值得长期保存的事实"]
+}
+```
+
+`rewind_context` 必须是当前 assistant step 唯一的 tool call。Tool 本身只校验 checkpoint 并把请求写入 `Session.pending_context_rewind`；它不立即修改 history。Runner 先写完 assistant tool call 和对应 tool result，再执行：
+
+```mermaid
+sequenceDiagram
+    participant LLM
+    participant Tool as rewind_context
+    participant Runner
+    participant Context as ContextCheckpointManager
+    participant Cache as Memory Selection
+
+    LLM->>Tool: checkpoint_id + carry_forward
+    Tool-->>Runner: rewind_scheduled
+    Runner->>Runner: 完整写入本 step tool chain
+    Runner->>Context: apply_pending()
+    Context->>Context: 校验 checkpoint digest
+    Context->>Context: 原子归档当前 branch
+    Context->>Context: 恢复 snapshot + bridge message
+    Context-->>Runner: ContextRewindResult
+    Runner->>Cache: 清缓存并使旧精筛/提取 generation 失效
+    Runner->>LLM: 从新 branch 继续
+```
+
+目标 checkpoint 之后的 active checkpoint 元数据会被移除，但对应文件和整个废弃 branch 仍保留。新的 bridge 使用 `user` role，并明确声明它是内部工作记忆、不是新的用户请求，且外部副作用未回滚。
+
+`long_term_candidates` 不直接调用 `MemoryStore.write()`。它随 bridge 进入回合结束后的 `MemoryWorker`；Memory 提取提示将其视为不可信候选，只保存被对话支持的持久偏好、约束、项目事实或引用，跳过临时计划、失败方案和瞬时执行状态。
+
+回退成功后，root Session 会清除 `MemorySelectionCache`，并同时调用 `MemorySelectionWorker.invalidate()` 和 `MemoryWorker.invalidate()`。未开始的旧任务被取消；正在运行的旧精筛 generation 即使完成也不会提交结果，正在运行的旧 Memory 提取任务会在解析响应后及每次写文件前重新检查 generation。Subagent 和 Team worker 使用独立 Session ID 和 checkpoint 链，只能回退自己的 history。
+
+前台回退成功后 Renderer 会显示目标 checkpoint、丢弃消息数和废弃 branch transcript 路径。已经输出到终端的旧工具日志不会从 UI 中删除；提示只用于说明实际模型 context 已切换分支。
+
+上下文回退的语义边界是：
+
+- 回退 `session.history`，不回退 workspace、Git、Shell、网络、审批、Task、后台任务、Team 消息或 UI 输出。
+- sandbox 继续限制 Shell 能力，但不提供文件事务或自动 rollback。
+- checkpoint/branch JSONL 没有配额、TTL 或自动清理。
+- checkpoint 元数据随 root Session 持久化；当前临时 Subagent/Team worker Session 不跨重启恢复。
+- pending 请求遇到权限拒绝、用户中断或提前停止时会清空，避免下一次 Runner 误消费。
+
 ### 压缩边界和当前限制
 
 - 自动压缩与 `/compact` 相互独立；Runner 不会根据 token 阈值自动调用 LLM 摘要。
@@ -1223,6 +1300,7 @@ flowchart LR
 - `read_file` 结果不受旧结果压缩保护以外的特殊待遇：超过 4,000 字符时仍会先被工具结果预算截断。
 - transcript 和工具结果归档当前没有清理、配额或跨 workspace 索引机制。
 - `/compact` 的摘要是一条 `user` 消息，不保留原来的逐条 role 结构；需要细节时必须通过 transcript 路径重新读取。
+- checkpoint 回退和 `/compact` 相互独立：前者由当前 Agent 选择精确分支点且不增加模型请求，后者由独立 LLM 总结全部当前 history。
 
 ## Memory
 
@@ -1374,6 +1452,8 @@ sequenceDiagram
 
 写入前会校验必填字段和 Memory 类型，并跳过已有的同名 Memory。有效记录通过 `MemoryStore.write()` 写入独立 Markdown 文件，随后重建 `MEMORY.md`。
 
+如果最近对话包含 context rewind bridge，提取器会把其中的 `long_term_candidates` 视为候选而不是事实来源。只有被保留对话支持且适合跨轮次使用的内容才允许落盘；`completed`、`failed_approaches` 和 `next_steps` 等工作记忆字段不会因为出现在 carry-forward 中就自动成为长期 Memory。
+
 ### Memory 整理
 
 当 Memory 文件数量达到 `CONSOLIDATE_THRESHOLD`（当前为 10）时，`consolidate_memories()` 调用 LLM 检查重复、冲突和过期记录。LLM 返回：
@@ -1406,6 +1486,7 @@ sequenceDiagram
 - 后台提取或整理失败不会影响当前回答或下一轮用户输入。
 - `MemoryWorker` 只有一个工作线程，保证提取、整理和文件删除按轮次顺序执行。
 - `MemorySelectionWorker` 使用独立单线程和 latest-wins 策略，避免精筛任务堆积。
+- context rewind 会立即清除当前 Session 的精筛缓存，并使旧 selection 和 extraction generation 失效；旧分支提取结果不会在 generation 检查后继续写入 Memory。
 - `/clear` 等 slash command 不会触发 Memory 提取或精筛；只有执行过 `AgentRunner.run()` 的普通用户请求会在结束时提交后台任务。
 - `/memory off` 会跳过 Memory 注入、后台精筛和回合结束后的 Memory 提取，并阻止已经提交的精筛结果回写缓存。
 

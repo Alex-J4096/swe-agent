@@ -7,6 +7,7 @@ from typing import Callable
 
 from src.infrastructure.model_provider import Provider
 from src.runtime.agent_runner import AgentRunner
+from src.runtime.approval import ApprovalRuntime, ApprovalRuntimeEvent
 from src.teams.teammate_worker import TeammateWorker
 from src.teams.team_runtime import TeamRuntime
 from src.teams.protocol import PlanStatus
@@ -22,6 +23,7 @@ class TeamController:
         toolset: ToolSet,
         runner_factory: Callable[[], AgentRunner],
         model_getter: Callable[[], str],
+        approval_runtime: ApprovalRuntime | None = None,
         *,
         worker_count: int = 2,
     ) -> None:
@@ -33,9 +35,34 @@ class TeamController:
         self.runner_factory = runner_factory
         self.model_getter = model_getter
         self.worker_count = worker_count
+        self.approval_runtime = approval_runtime
+        self._unsubscribe_approval = (
+            approval_runtime.subscribe(self._on_approval_event)
+            if approval_runtime is not None
+            else None
+        )
         self.runtime: TeamRuntime | None = None
         self.workers: list[TeammateWorker] = []
         self.threads: list[Thread] = []
+
+    def _on_approval_event(self, event: ApprovalRuntimeEvent) -> None:
+        source = event.request.source
+        if source.kind != "team" or source.agent_id is None or self.runtime is None:
+            return
+        state = (
+            AgentState.awaiting_approval
+            if event.kind == "request_created"
+            else AgentState.work
+        )
+        try:
+            self.runtime.set_member_state(
+                source.agent_id,
+                state,
+                task_id=source.task_id,
+                session_id=source.session_id,
+            )
+        except ValueError:
+            return
 
     def start_team(self, team_id: str, worker_count: int | None = None) -> TeamRuntime:
         if self.runtime is not None:
@@ -97,6 +124,12 @@ class TeamController:
         if self.runtime is None:
             return
         self.runtime.request_shutdown()
+        if self.approval_runtime is not None:
+            for worker in self.workers:
+                self.approval_runtime.cancel_source(
+                    agent_id=worker.agent_id,
+                    reason="Team shutdown cancelled the approval request",
+                )
         for worker in self.workers:
             worker.stop()
         for thread in self.threads:

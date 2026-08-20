@@ -10,6 +10,7 @@ from src.utils.slash_commands.commands.resume import ResumeCommand
 from src.utils.slash_commands.commands.sessions import SessionsCommand
 from src.utils.slash_commands.commands.status import StatusCommand
 from src.utils.slash_commands.commands.team import TeamCommand
+from src.utils.slash_commands.commands.permissions import PermissionsCommand
 
 
 def create_command_registry():
@@ -19,6 +20,7 @@ def create_command_registry():
         DebugCommand(),
         ModelCommand(),
         MemoryCommand(),
+        PermissionsCommand(),
         SessionsCommand(),
         StatusCommand(),
         TeamCommand(),

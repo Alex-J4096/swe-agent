@@ -93,6 +93,8 @@ class SlashCommandCompletionTests(unittest.TestCase):
                 "/debug",
                 "/model",
                 "/memory",
+                "/permissions",
+                "/approvals",
                 "/sessions",
                 "/status",
                 "/team",

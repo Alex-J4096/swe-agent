@@ -22,6 +22,7 @@ class AgentRole(str, Enum):
 class AgentState(str, Enum):
     idle = "idle"
     work = "work"
+    awaiting_approval = "awaiting_approval"
     failed = "failed"
     stopping = "stopping"
     stopped = "stopped"

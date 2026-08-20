@@ -1,5 +1,6 @@
 from src.utils.slash_commands.base import BaseCommand
 from src.utils.slash_commands.base import CommandContext, CommandResult
+from src.runtime.context_rewind import ContextCheckpointManager
 
 
 # 清空当前会话
@@ -16,6 +17,7 @@ class ClearCommand(BaseCommand):
         tool_state_count = len(context.session.tool_state)
         context.session.history.clear()
         context.session.tool_state.clear()
+        ContextCheckpointManager.clear(context.session)
         if (
             context.session_store is not None
             and context.session_store.exists(context.session.session_id)

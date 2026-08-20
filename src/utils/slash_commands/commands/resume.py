@@ -12,7 +12,12 @@ def _copy_session(target, source) -> None:
     target.history = source.history
     target.tool_state = source.tool_state
     target.approved_command_prefixes = source.approved_command_prefixes
+    target.approved_permission_scopes = source.approved_permission_scopes
     target.memory_enabled = source.memory_enabled
+    target.context_checkpoints = source.context_checkpoints
+    target.context_branch_id = source.context_branch_id
+    target.context_generation = source.context_generation
+    target.pending_context_rewind = None
     target.running = True
 
 

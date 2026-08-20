@@ -10,6 +10,7 @@ from src.tools.base import BaseTool, ToolContext
 from src.tools.file.edit_file import EditFileTool
 from src.tools.file.read_file import ReadFileTool
 from src.tools.file.write_file import WriteFileTool
+from src.tools.memory.rewind_context import RewindContextTool
 from src.tools.shell.bash import BashTool
 from src.tools.skill.load_skill import LoadSkill
 from src.tools.task.background_task import BackgroundTaskManager
@@ -54,6 +55,7 @@ class ToolSet:
                 ReadFileTool(),
                 WriteFileTool(),
                 EditFileTool(),
+                RewindContextTool(),
                 TodoManager(),
                 TaskManager(),
                 BackgroundTaskManager(),
