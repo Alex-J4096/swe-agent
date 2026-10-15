@@ -147,3 +147,5 @@ docs/ARCHITECTURE.md     # 详细架构说明
 ## License
 
 MIT
+
+终端执行普通任务时，按 `Esc` 可停止当前轮并返回输入框，继续发送新任务；已有文件修改会保留，当前前台 shell 进程组会被终止。这不会自动停止独立运行的团队任务（使用 `/team shutdown`）。该快捷键目前支持 macOS/Linux 的交互式终端。

@@ -32,6 +32,9 @@ from src.utils.logger import Logger
 from src.utils.welcome import print_welcome
 from src.ui.console import ConsoleRenderer, format_tool_preview
 from src.utils.terminal import ESCAPE, read_confirmation
+from src.utils.interrupt import (
+    TurnInterrupted, finish_interrupted_turn, interruptible_turn,
+)
 from src.utils.slash_commands.base import CommandContext
 from src.utils.slash_commands.factory import create_command_registry
 from src.tools.subagent.delegate_task import DelegateTaskTool
@@ -388,119 +391,126 @@ def main() -> None:
 
             continue
 
-        # Start before session/prompt/memory preparation so slow local work is
-        # also visible immediately after the user submits the prompt.
-        renderer.start_thinking("Preparing")
-        session.history.append({"role": "user", "content": query})
-        save_session_if_needed(session_store, session, workdir)
-        system_prompt = build_system_prompt(
-            toolset,
-            workdir,
-            memory_store,
-        )
-        memory_context = ""
-        if session.memory_enabled:
-            memory_revision = memory_store.memory_revision()
-            local_files = memory_store.select_relevant_memories(
-                session.history,
-                use_llm=False,
-            )
-            cached_files = memory_selection_cache.get_compatible(
-                session_id=session.session_id,
-                messages=session.history,
-                memory_revision=memory_revision,
-            )
-            selected_files = merge_memory_filenames(
-                local_files,
-                cached_files,
-            )
-            memory_context = memory_store.load_memories_by_filenames(
-                selected_files,
-            )
-        turn_system_prompt = system_prompt
-        if memory_context:
-            turn_system_prompt = (
-                f"{system_prompt}\n\n"
-                f"Relevant memories:\n{memory_context}"
-            )
-
-        team_runtime = command_context.team_runtime
-        if team_runtime is not None:
-            turn_system_prompt += (
-                "\n\nTeam mode: you are the Lead. Use propose_team_plan to "
-                "propose a structured plan before calling any other tool. "
-                "Do not inspect the workspace first. Base the initial plan "
-                "on the user's request and make reasonable assumptions. "
-                "After proposing, wait for explicit user choice or "
-                "`/team approve <plan-id>`. Do not modify the workspace directly."
-            )
-
-        result = runner.run(
-            session=session,
-            toolset=toolset,
-            system_prompt=turn_system_prompt,
-            on_tool_requested=lambda name, arguments: display_tool_requested(
-                name, arguments, renderer
-            ),
-            # on_tool_result 只用于特定方法的打印结果，例如: todo_manager
-            on_tool_result=lambda name, output: display_tool_result(
-                name, output, renderer
-            ),
-            before_model_request=(
-                (
-                    lambda current_session: team_runtime.deliver_pending(
-                        current_session,
-                        "lead",
-                    )
+        try:
+            with interruptible_turn():
+                # Start before session/prompt/memory preparation so slow local work is
+                # also visible immediately after the user submits the prompt.
+                renderer.start_thinking("Preparing")
+                session.history.append({"role": "user", "content": query})
+                save_session_if_needed(session_store, session, workdir)
+                system_prompt = build_system_prompt(
+                    toolset,
+                    workdir,
+                    memory_store,
                 )
-                if team_runtime is not None
-                else None
-            ),
-            tool_context=ToolContext(
-                session=session,
-                team_runtime=team_runtime,
-                agent_id="lead" if team_runtime is not None else None,
-            ),
-            stop_after_tool=(
-                (
-                    lambda name, output: (
-                        name == "propose_team_plan"
-                        and output.get("ok") is True
-                        and output.get("status") == "awaiting_approval"
+                memory_context = ""
+                if session.memory_enabled:
+                    memory_revision = memory_store.memory_revision()
+                    local_files = memory_store.select_relevant_memories(
+                        session.history,
+                        use_llm=False,
                     )
-                )
-                if team_runtime is not None
-                else None
-            ),
-            continue_after_tool=(
-                (
-                    lambda name, output: confirm_team_plan_continuation(
-                        renderer,
-                        name,
-                        output,
+                    cached_files = memory_selection_cache.get_compatible(
+                        session_id=session.session_id,
+                        messages=session.history,
+                        memory_revision=memory_revision,
                     )
+                    selected_files = merge_memory_filenames(
+                        local_files,
+                        cached_files,
+                    )
+                    memory_context = memory_store.load_memories_by_filenames(
+                        selected_files,
+                    )
+                turn_system_prompt = system_prompt
+                if memory_context:
+                    turn_system_prompt = (
+                        f"{system_prompt}\n\n"
+                        f"Relevant memories:\n{memory_context}"
+                    )
+
+                team_runtime = command_context.team_runtime
+                if team_runtime is not None:
+                    turn_system_prompt += (
+                        "\n\nTeam mode: you are the Lead. Use propose_team_plan to "
+                        "propose a structured plan before calling any other tool. "
+                        "Do not inspect the workspace first. Base the initial plan "
+                        "on the user's request and make reasonable assumptions. "
+                        "After proposing, wait for explicit user choice or "
+                        "`/team approve <plan-id>`. Do not modify the workspace directly."
+                    )
+
+                result = runner.run(
+                    session=session,
+                    toolset=toolset,
+                    system_prompt=turn_system_prompt,
+                    on_tool_requested=lambda name, arguments: display_tool_requested(
+                        name, arguments, renderer
+                    ),
+                    # on_tool_result 只用于特定方法的打印结果，例如: todo_manager
+                    on_tool_result=lambda name, output: display_tool_result(
+                        name, output, renderer
+                    ),
+                    before_model_request=(
+                        (
+                            lambda current_session: team_runtime.deliver_pending(
+                                current_session,
+                                "lead",
+                            )
+                        )
+                        if team_runtime is not None
+                        else None
+                    ),
+                    tool_context=ToolContext(
+                        session=session,
+                        team_runtime=team_runtime,
+                        agent_id="lead" if team_runtime is not None else None,
+                    ),
+                    stop_after_tool=(
+                        (
+                            lambda name, output: (
+                                name == "propose_team_plan"
+                                and output.get("ok") is True
+                                and output.get("status") == "awaiting_approval"
+                            )
+                        )
+                        if team_runtime is not None
+                        else None
+                    ),
+                    continue_after_tool=(
+                        (
+                            lambda name, output: confirm_team_plan_continuation(
+                                renderer,
+                                name,
+                                output,
+                            )
+                        )
+                        if team_runtime is not None
+                        else None
+                    ),
+                    on_context_rewound=handle_context_rewind,
                 )
-                if team_runtime is not None
-                else None
-            ),
-            on_context_rewound=handle_context_rewind,
-        )
-        save_session_if_needed(session_store, session, workdir)
+                save_session_if_needed(session_store, session, workdir)
 
-        if result.ok:
-            if result.content:
-                renderer.show_assistant(result.content)
-           # Logger.debug("LLM", result.content)
-        else:
-            renderer.show_error(result.error or "Agent run failed.", "LLM")
+                if result.ok:
+                    if result.content:
+                        renderer.show_assistant(result.content)
+                   # Logger.debug("LLM", result.content)
+                else:
+                    renderer.show_error(result.error or "Agent run failed.", "LLM")
 
-        # Submit a snapshot and immediately continue to the next prompt.
-        if session.memory_enabled:
-            memory_worker.submit(session.history)
-            memory_selection_worker.submit(
-                session.session_id,
-                session.history,
-            )
+                # Submit a snapshot and immediately continue to the next prompt.
+                if session.memory_enabled:
+                    memory_worker.submit(session.history)
+                    memory_selection_worker.submit(
+                        session.session_id,
+                        session.history,
+                    )
+        except (TurnInterrupted, KeyboardInterrupt):
+            renderer.stop_thinking()
+            finish_interrupted_turn(session)
+            save_session_if_needed(session_store, session, workdir)
+            renderer.show_notice("Turn stopped. Send a new request to continue. Changes are retained.")
 
     team_controller.shutdown()
     approval_runtime.cancel_source(reason="Application shutdown")

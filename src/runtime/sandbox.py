@@ -284,6 +284,15 @@ class SandboxedCommandExecutor:
                     backend=self.backend_name,
                 )
 
+            except BaseException:
+                # A stopped foreground turn must not leave its shell running.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
+
             return CommandExecutionResult(
                 stdout=stdout[-MAX_CAPTURE_CHARS:],
                 stderr=stderr[-MAX_CAPTURE_CHARS:],

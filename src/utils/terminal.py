@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.utils.interrupt import terminal_input_lock
+
 import os
 import sys
 from typing import Tuple
@@ -11,6 +13,11 @@ ESCAPE = "\x1b"
 
 
 def read_confirmation(question: str) -> Tuple[str, bool]:
+    with terminal_input_lock:
+        return _read_confirmation(question)
+
+
+def _read_confirmation(question: str) -> Tuple[str, bool]:
     """Read a one-key confirmation on TTYs, with Esc available immediately."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         try:
