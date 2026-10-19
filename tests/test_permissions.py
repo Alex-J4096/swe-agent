@@ -191,7 +191,7 @@ def test_approval_prompt_logs_only_the_allow_decision(
 
     assert response.approved is True
     output = capsys.readouterr().out
-    assert "✓ Allowed run_bash: rm build-output" in output
+    assert "✔ Allowed run_bash: rm build-output" in output
     assert "Potentially destructive command" not in output
 
 

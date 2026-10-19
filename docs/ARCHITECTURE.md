@@ -1330,6 +1330,7 @@ Memory 保存在当前工作区的 `.swe-agent/memory/`：
 name: user-preference-tabs
 description: User prefers tabs for indentation
 type: user
+scope: project
 ---
 
 User prefers using tabs, not spaces, for indentation.
@@ -1341,6 +1342,13 @@ User prefers using tabs, not spaces, for indentation.
 - `feedback`：用户对 Agent 工作方式的指导或纠正。
 - `project`：项目事实、约束和约定。
 - `reference`：外部资料或引用位置。
+
+支持的 `scope` 为：
+
+- `project`：可跨 Session 复用的持久 Memory。索引和相关 Memory 注入对所有 Session 可见。
+- `session`：只属于写入它的 Session 的任务态 Memory，frontmatter 会额外记录 `session_id`，只在该 Session 内注入。
+
+自动抽取时，`user`/`feedback`/`reference` 默认写入 `project` scope；`project` 类型以及一次性任务、计划、执行状态默认写入 `session` scope，只有模型显式返回 `scope: project` 时才持久化。没有 `scope` 字段的历史 Memory（旧版本写入）无法判断来源，因此按 `session` scope 处理，不会自动泄漏到新 Session；需要保留时手动补 `scope: project`。
 
 `MemoryStore` 由 `main.py` 使用工作区、模型客户端和模型名称构造：
 
@@ -1362,9 +1370,10 @@ Memory 通过两条路径进入当前轮上下文。Memory 默认开启，也可
 
 每次收到普通用户请求后，`main.py` 调用 `build_system_prompt()`：
 
-1. 读取 `.swe-agent/memory/MEMORY.md`。
-2. 将完整的 Memory 索引追加到 `Persistent memory index` 段落。
-3. 将生成的 SYSTEM 传给本轮 `AgentRunner.run()`。
+1. `/memory off` 时直接跳过 Memory，不注入任何索引或正文。
+2. 调用 `visible_index(session_id)` 渲染当前 Session 可见的 Memory 索引（`project` scope 加上本 Session 的 `session` scope）。
+3. 将索引追加到 `Persistent memory index` 段落。
+4. 将生成的 SYSTEM 传给本轮 `AgentRunner.run()`。
 
 一次 `AgentRunner.run()` 内可能有多次模型和工具迭代，但它们复用同一个 SYSTEM。Memory 提取和整理只在整轮结束后触发，因此同一轮内不重复读取索引或重建 SYSTEM。
 
@@ -1372,11 +1381,11 @@ Memory 通过两条路径进入当前轮上下文。Memory 默认开启，也可
 
 当前请求不会等待 LLM 精筛，而是执行本地候选和缓存合并：
 
-1. `select_relevant_memories(..., use_llm=False)` 读取 Memory 元数据，并通过 `name + description` 做关键词匹配；名称命中的权重高于描述。
+1. `select_relevant_memories(..., use_llm=False, session_id=...)` 在 `list_visible_memories(session_id)` 范围内读取 Memory 元数据，并通过 `name + description` 做关键词匹配；名称命中的权重高于描述。
 2. `MemorySelectionCache` 尝试读取上一轮已完成的精筛结果。
 3. 缓存只有在 `memory_revision` 一致，且缓存对应的历史是当前 `session.history` 前缀时才可复用。
 4. 当前问题的本地候选优先，再用缓存结果补足，最终最多注入 5 条 Memory。
-5. `load_memories_by_filenames()` 读取选中文件正文，并渲染为 `<memory>` 块。
+5. `load_memories_by_filenames(..., session_id=...)` 只读取当前 Session 可见的文件，并渲染为 `<memory>` 块。
 6. `main.py` 将这些块追加到当前轮的 `turn_system_prompt`，不写回 `session.history`。
 
 因此，首次遇到某类问题时即使后台精筛尚未完成，请求仍然可以使用本地候选立即运行；精筛结果只影响后续请求。
@@ -1386,7 +1395,7 @@ Memory 通过两条路径进入当前轮上下文。Memory 默认开启，也可
 本轮 `AgentRunner.run()` 返回后，`main.py` 调用：
 
 ```python
-memory_worker.submit(session.history)
+memory_worker.submit(session.history, session.session_id)
 memory_selection_worker.submit(session.session_id, session.history)
 ```
 
@@ -1445,12 +1454,15 @@ sequenceDiagram
     "name": "user-preference-tabs",
     "type": "user",
     "description": "User prefers tabs for indentation",
-    "body": "Always use tabs when writing or editing files."
+    "body": "Always use tabs when writing or editing files.",
+    "scope": "project"
   }
 ]
 ```
 
-写入前会校验必填字段和 Memory 类型，并跳过已有的同名 Memory。有效记录通过 `MemoryStore.write()` 写入独立 Markdown 文件，随后重建 `MEMORY.md`。
+写入前会校验必填字段、Memory 类型和 scope，并跳过已有的同名 Memory。有效记录通过 `MemoryStore.write()` 写入独立 Markdown 文件，随后重建 `MEMORY.md`。
+
+`scope` 缺省时按 `_resolve_scope()` 推断：`user`/`feedback`/`reference` 记为 `project`，其余（尤其是 `project` 类型）记为 `session`。`session` scope 的 Memory 会写入来源 `session_id`，因此中断的 Session 不会把自己的任务态提入新 Session。
 
 如果最近对话包含 context rewind bridge，提取器会把其中的 `long_term_candidates` 视为候选而不是事实来源。只有被保留对话支持且适合跨轮次使用的内容才允许落盘；`completed`、`failed_approaches` 和 `next_steps` 等工作记忆字段不会因为出现在 carry-forward 中就自动成为长期 Memory。
 
@@ -1465,7 +1477,8 @@ sequenceDiagram
       "name": "coding-style",
       "type": "user",
       "description": "Preferred coding style",
-      "body": "Use tabs consistently."
+      "body": "Use tabs consistently.",
+      "scope": "project"
     }
   ],
   "remove": [
@@ -1475,7 +1488,7 @@ sequenceDiagram
 }
 ```
 
-整理过程先写入合并后的 Memory，再删除 `remove` 中明确列出的源文件。删除范围被限制为当前 Memory 目录中已存在的文件，并且不会删除刚写入的目标文件。完成后重新生成 `MEMORY.md`。
+整理过程先写入合并后的 Memory，再删除 `remove` 中明确列出的源文件。合并记录的 scope 同样按 `_resolve_scope()` 解析；标记为 `session` 时继承被删除源文件中的 `session_id`，不会因为整理而变成跨 Session 持久 Memory。删除范围被限制为当前 Memory 目录中已存在的文件，并且不会删除刚写入的目标文件。完成后重新生成 `MEMORY.md`。
 
 ### 一致性和失败边界
 
@@ -1483,6 +1496,7 @@ sequenceDiagram
 - 当前轮不依赖 LLM side-query；本地关键词检索始终可以直接提供候选。
 - 后台精筛失败只影响后续请求的排序精度，不影响当前回答；缓存会继续使用本地候选或上一轮有效结果。
 - 精筛缓存绑定 Session、对话历史前缀和 `memory_revision`，Memory 文件发生变化或历史前缀不匹配时自动失效。
+- Memory 注入前会经过 `list_visible_memories(session_id)` 过滤：`project` scope 全局可见，`session` scope 仅在其来源 Session 内可见；旧版本无 scope 的记录按 `session` 处理。
 - 后台提取或整理失败不会影响当前回答或下一轮用户输入。
 - `MemoryWorker` 只有一个工作线程，保证提取、整理和文件删除按轮次顺序执行。
 - `MemorySelectionWorker` 使用独立单线程和 latest-wins 策略，避免精筛任务堆积。

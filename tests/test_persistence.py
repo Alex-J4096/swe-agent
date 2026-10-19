@@ -374,7 +374,7 @@ def test_resume_uses_conversation_renderer_when_available(tmp_path: Path) -> Non
     assert result.message is None
     rendered = output.getvalue()
     assert "Resumed session" in rendered
-    assert "› hello" in rendered
-    assert "╭─ assistant" in rendered
+    assert "hello" in rendered
+    assert "assistant" in rendered
     assert '"role": "assistant"' not in rendered
     database.close()

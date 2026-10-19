@@ -38,6 +38,22 @@ def render_welcome(session: Session, workdir: Path) -> str:
     )
 
 
+def render_welcome_v2(session: Session, workdir: Path) -> str:
+    """Render a minimal startup screen — no ASCII art, just clean info."""
+    sep = "─" * 48
+    return "\n".join([
+        "",
+        f"  ◆ SWE CLI",
+        f"  {sep}",
+        f"  dir       {format_workdir(workdir)}",
+        f"  session   {session.session_id[:8]}",
+        f"  model     {session.model}",
+        f"  {sep}",
+        f"  Type /help for available commands.",
+        "",
+    ])
+
+
 def print_welcome(session: Session, workdir: Path, renderer=None) -> None:
     """Print the startup panel through the shared terminal renderer."""
     if renderer is None:
@@ -45,5 +61,5 @@ def print_welcome(session: Session, workdir: Path, renderer=None) -> None:
 
         renderer = ConsoleRenderer()
 
-    rendered = render_welcome(session, workdir)
+    rendered = render_welcome_v2(session, workdir)
     renderer.show_welcome(rendered)

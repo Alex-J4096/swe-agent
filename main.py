@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit import prompt
+from prompt_toolkit.formatted_text import FormattedText
 
 from src.infrastructure.memory import MemoryStore
 from src.infrastructure.memory_selection_cache import MemorySelectionCache
@@ -98,12 +99,17 @@ def build_system_prompt(
     toolset: ToolSet,
     workdir: Path,
     memory_store: MemoryStore,
+    session_id: str | None = None,
+    memory_enabled: bool = True,
 ) -> str:
     system_prompt = SYSTEM.format(
         workspace=workdir,
         skills=toolset.skill_loader.get_skill_description(),
     )
-    memory_index = memory_store.read_memory_index()
+    if not memory_enabled:
+        return system_prompt
+
+    memory_index = memory_store.visible_index(session_id)
     if not memory_index:
         return system_prompt
 
@@ -368,12 +374,25 @@ def main() -> None:
 
     while session.running:
         try:
+            # Show a styled prompt with the current model name, similar to
+            # Claude Code / Aider / OpenCode. Use FormattedText (not HTML) so
+            # model names containing &, < or > cannot break prompt parsing.
+            short_model = session.model.rsplit("/", 1)[-1]
+            styled_prompt = FormattedText(
+                [
+                    ("fg:ansigray", short_model),
+                    ("", " "),
+                    ("fg:ansibrightblue", "❯"),
+                    ("", " "),
+                ]
+            )
             query = prompt(
-                "› ",
+                styled_prompt,
                 completer=command_completer,
                 complete_while_typing=True,
             )
         except (EOFError, KeyboardInterrupt):
+            renderer.show_notice("Goodbye! 👋")
             break
 
         if not query.strip():
@@ -402,6 +421,8 @@ def main() -> None:
                     toolset,
                     workdir,
                     memory_store,
+                    session_id=session.session_id,
+                    memory_enabled=session.memory_enabled,
                 )
                 memory_context = ""
                 if session.memory_enabled:
@@ -409,6 +430,7 @@ def main() -> None:
                     local_files = memory_store.select_relevant_memories(
                         session.history,
                         use_llm=False,
+                        session_id=session.session_id,
                     )
                     cached_files = memory_selection_cache.get_compatible(
                         session_id=session.session_id,
@@ -421,6 +443,7 @@ def main() -> None:
                     )
                     memory_context = memory_store.load_memories_by_filenames(
                         selected_files,
+                        session_id=session.session_id,
                     )
                 turn_system_prompt = system_prompt
                 if memory_context:
@@ -501,7 +524,10 @@ def main() -> None:
 
                 # Submit a snapshot and immediately continue to the next prompt.
                 if session.memory_enabled:
-                    memory_worker.submit(session.history)
+                    memory_worker.submit(
+                        session.history,
+                        session.session_id,
+                    )
                     memory_selection_worker.submit(
                         session.session_id,
                         session.history,

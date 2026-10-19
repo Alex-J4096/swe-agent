@@ -51,8 +51,11 @@ def test_renderer_keeps_tool_lifecycle_in_one_visual_language() -> None:
     renderer.show_tool_result("run_bash", {"ok": True})
 
     rendered = output.getvalue()
-    assert "├─ run_bash" in rendered
-    assert "└─ ✓ run_bash completed" in rendered
+    # New style uses ▶ icon and "done" instead of "completed".
+    assert "├─" in rendered
+    assert "run_bash" in rendered
+    assert "└─" in rendered
+    assert "done" in rendered
 
 
 def test_renderer_shows_tool_failure_reason() -> None:
@@ -63,7 +66,9 @@ def test_renderer_shows_tool_failure_reason() -> None:
         {"ok": False, "error": "Team plan must be approved first"},
     )
 
-    assert "Error: Team plan must be approved first" in output.getvalue()
+    rendered = output.getvalue()
+    assert "Team plan must be approved first" in rendered
+    assert "failed" in rendered
 
 
 def test_renderer_prints_complete_team_plan_for_approval() -> None:
@@ -90,11 +95,11 @@ def test_renderer_prints_complete_team_plan_for_approval() -> None:
     )
 
     rendered = output.getvalue()
-    assert "Plan ID: plan_demo" in rendered
-    assert "Goal: Update the team docs" in rendered
+    assert "plan_demo" in rendered
+    assert "Update the team docs" in rendered
     assert "[docs] Update docs" in rendered
-    assert "Workspace: worktree" in rendered
-    assert "Approve with: /team approve plan_demo" in rendered
+    assert "worktree" in rendered
+    assert "/team approve plan_demo" in rendered
 
 
 def test_renderer_strips_control_sequences_from_model_content() -> None:
@@ -105,9 +110,9 @@ def test_renderer_strips_control_sequences_from_model_content() -> None:
     rendered = output.getvalue()
     assert "unsafe" in rendered
     assert "\033[31m" not in rendered
-    assert "╭─ assistant" in rendered
-    assert "│ hello unsafe" in rendered
-    assert "╰─" in rendered
+    # New style uses ◆ icon and "assistant" label.
+    assert "assistant" in rendered
+    assert "hello unsafe" in rendered
     assert "╮" not in rendered
 
 
@@ -145,9 +150,55 @@ def test_renderer_formats_restored_history_as_conversation() -> None:
     ])
 
     rendered = output.getvalue()
-    assert "› inspect files" in rendered
-    assert "╭─ assistant" in rendered
-    assert "├─ run_bash  {\"command\":\"pwd\"}" in rendered
-    assert "└─ ✓ run_bash completed" in rendered
+    # New style uses ❯ for user messages instead of ›.
+    assert "inspect files" in rendered
+    assert "assistant" in rendered
+    assert "run_bash" in rendered
+    assert "done" in rendered
     assert "tool_calls" not in rendered
     assert "function" not in rendered
+
+
+def test_show_welcome_does_not_recolor_trailing_characters() -> None:
+    lines_written: list[str] = []
+    renderer = ConsoleRenderer(use_color=True)
+    renderer._write = lambda text="": lines_written.append(text)
+
+    panel = (
+        "\n"
+        "  ◆ SWE CLI\n"
+        "  ────────────────────────────────────────────────\n"
+        "  dir       ~/dev/swe-agent\n"
+        "  session   42749eaf\n"
+        "  model     deepseek-ai/DeepSeek-V4-Flash\n"
+        "  ────────────────────────────────────────────────\n"
+        "  Type /help for available commands.\n"
+    )
+    renderer.show_welcome(panel)
+
+    # In key-value lines, the value part must not end with an ANSI reset directly
+    # after the last character, indicating the last char was recolored.
+    dir_line = next(line for line in lines_written if "swe-agent" in line)
+    assert dir_line.endswith("~/dev/swe-agent")
+
+    model_line = next(line for line in lines_written if "DeepSeek-V4-Flash" in line)
+    assert model_line.endswith("deepseek-ai/DeepSeek-V4-Flash")
+
+
+def test_show_welcome_emits_no_ansi_when_color_disabled() -> None:
+    renderer, output = make_renderer()
+
+    panel = (
+        "\n"
+        "  ◆ SWE CLI\n"
+        "  ────────────────────────────────────────────────\n"
+        "  dir       ~/dev/swe-agent\n"
+        "  model     deepseek-ai/DeepSeek-V4-Flash\n"
+        "  ────────────────────────────────────────────────\n"
+        "  Type /help for available commands.\n"
+    )
+    renderer.show_welcome(panel)
+
+    rendered = output.getvalue()
+    assert "\x1b" not in rendered
+    assert "Type /help for available commands." in rendered

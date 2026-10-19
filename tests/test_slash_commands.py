@@ -50,7 +50,9 @@ class HelpCommandTests(unittest.TestCase):
 
         self.assertIsNone(result.message)
         display.assert_called_once()
-        help_text = display.call_args.args[0]
+        # The help command now passes an ANSI object; extract its raw value.
+        help_obj = display.call_args.args[0]
+        help_text = help_obj.value if hasattr(help_obj, "value") else str(help_obj)
         for usage in (
             "/help",
             "/clear",
@@ -69,7 +71,10 @@ class HelpCommandTests(unittest.TestCase):
         result = registry.dispatch("/help extra", object())
 
         self.assertIsNone(result.message)
-        display.assert_called_once_with("Usage: /help")
+        display.assert_called_once()
+        help_obj = display.call_args.args[0]
+        help_text = help_obj.value if hasattr(help_obj, "value") else str(help_obj)
+        self.assertIn("Usage: /help", help_text)
 
 
 class SlashCommandCompletionTests(unittest.TestCase):

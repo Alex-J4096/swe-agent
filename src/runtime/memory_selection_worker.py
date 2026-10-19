@@ -81,6 +81,7 @@ class MemorySelectionWorker:
             messages,
             max_items=self.CANDIDATE_LIMIT,
             use_llm=False,
+            session_id=session_id,
         )
         if not self._is_current(generation):
             return
@@ -89,6 +90,7 @@ class MemorySelectionWorker:
             messages,
             candidates,
             max_items=self.RESULT_LIMIT,
+            session_id=session_id,
         )
         if selected is None:
             return

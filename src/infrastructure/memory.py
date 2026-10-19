@@ -12,6 +12,11 @@ from openai import OpenAIError
 from src.infrastructure.retry import request_with_retry
 
 MEMORY_TYPES = ("user", "feedback", "project", "reference")
+MEMORY_SCOPES = ("session", "project")
+# Memory types that describe durable user/project-wide facts. Extracted
+# memories of these types default to ``project`` scope so they survive across
+# sessions; everything else is session-scoped unless the extractor promotes it.
+DURABLE_MEMORY_TYPES = ("user", "feedback", "reference")
 MEMORY_INDEX_NAME = "MEMORY.md"
 
 
@@ -22,6 +27,8 @@ class Memory:
     type: str
     content: str
     path: Path | None = None
+    scope: str = "project"
+    session_id: str | None = None
 
 
 class MemoryStore:
@@ -59,14 +66,25 @@ class MemoryStore:
                 f"Expected one of: {allowed_types}."
             )
 
+        scope = memory.scope or "project"
+        if scope not in MEMORY_SCOPES:
+            allowed_scopes = ", ".join(MEMORY_SCOPES)
+            raise ValueError(
+                f"Unknown memory scope '{scope}'. "
+                f"Expected one of: {allowed_scopes}."
+            )
+
         file_path = self.memory_dir / f"{self._slugify(memory.name)}.md"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
 
-        metadata = {
+        metadata: dict[str, Any] = {
             "name": memory.name,
             "description": memory.description,
             "type": memory.type,
+            "scope": scope,
         }
+        if scope == "session" and memory.session_id:
+            metadata["session_id"] = memory.session_id
         frontmatter = yaml.safe_dump(
             metadata,
             allow_unicode=True,
@@ -87,6 +105,9 @@ class MemoryStore:
         mem_type: str,
         description: str,
         body: str,
+        *,
+        scope: str = "project",
+        session_id: str | None = None,
     ) -> Path:
         """Write a memory using the individual metadata fields."""
         return self.write(
@@ -95,6 +116,8 @@ class MemoryStore:
                 description=description,
                 type=mem_type,
                 content=body,
+                scope=scope,
+                session_id=session_id,
             )
         )
 
@@ -141,26 +164,73 @@ class MemoryStore:
 
             raw = path.read_text(encoding="utf-8")
             metadata, body = self._parse_frontmatter(raw)
+            memory_type = str(metadata.get("type", "user"))
+            scope = str(metadata.get("scope", "")).strip().lower()
+            if scope not in MEMORY_SCOPES:
+                # Legacy memories predate provenance, so we cannot tell which
+                # session/task they came from. Treat them as session-scoped
+                # (inert outside their original context) to avoid leaking
+                # stale task state into new sessions. Add "scope: project"
+                # to a memory file to make it durable on purpose.
+                scope = "session"
+            raw_session_id = metadata.get("session_id")
+            session_id = (
+                str(raw_session_id).strip()
+                if raw_session_id is not None and str(raw_session_id).strip()
+                else None
+            )
             result.append(
                 {
                     "filename": path.name,
                     "name": str(metadata.get("name", path.stem)),
                     "description": str(metadata.get("description", "")),
-                    "type": str(metadata.get("type", "user")),
+                    "type": memory_type,
+                    "scope": scope,
+                    "session_id": session_id,
                     "body": body,
                 }
             )
         return result
 
+    def list_visible_memories(
+        self,
+        session_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """Return the memories injectable in this session's context.
+
+        Durable ``project`` memories are available throughout the workspace;
+        ``session`` memories are only available inside the session that wrote
+        them. This stops an interrupted or unrelated session from leaking its
+        task state into a new one.
+        """
+        return [
+            memory
+            for memory in self.list_memory_files()
+            if memory["scope"] == "project"
+            or (
+                session_id is not None
+                and memory["session_id"] == session_id
+            )
+        ]
+
+    def visible_index(self, session_id: str | None = None) -> str:
+        """Render the memory index for one session's context."""
+        return "\n".join(
+            f"- [{memory['name']}]({memory['filename']}) — "
+            f"{' '.join(memory['description'].split())}"
+            for memory in self.list_visible_memories(session_id)
+        )
+
     def describe_memories(
         self,
         filenames: list[str],
+        session_id: str | None = None,
     ) -> list[dict[str, str]]:
         """Return safe metadata for a bounded set of memory filenames."""
         requested = set(filenames)
         memories = {
             memory["filename"]: memory
-            for memory in self.list_memory_files()
+            for memory in self.list_visible_memories(session_id)
             if memory["filename"] in requested
         }
         return [
@@ -178,6 +248,7 @@ class MemoryStore:
         messages: list[dict[str, Any]],
         max_items: int = 5,
         use_llm: bool = True,
+        session_id: str | None = None,
     ) -> list[str]:
         """Select relevant memory filenames for the current dialogue.
 
@@ -187,7 +258,7 @@ class MemoryStore:
         if max_items <= 0:
             return []
 
-        memories = self.list_memory_files()
+        memories = self.list_visible_memories(session_id)
         if not memories:
             return []
 
@@ -228,16 +299,18 @@ class MemoryStore:
         self,
         messages: list[dict[str, Any]],
         use_llm: bool = True,
+        session_id: str | None = None,
     ) -> str:
         """Load relevant memory content for injection into context."""
         memories_by_filename = {
             memory["filename"]: memory
-            for memory in self.list_memory_files()
+            for memory in self.list_visible_memories(session_id)
         }
         sections = []
         for filename in self.select_relevant_memories(
             messages,
             use_llm=use_llm,
+            session_id=session_id,
         ):
             memory = memories_by_filename.get(filename)
             if memory is None:
@@ -251,11 +324,15 @@ class MemoryStore:
             )
         return "\n\n".join(sections)
 
-    def load_memories_by_filenames(self, filenames: list[str]) -> str:
+    def load_memories_by_filenames(
+        self,
+        filenames: list[str],
+        session_id: str | None = None,
+    ) -> str:
         """Load memory bodies in the caller-provided order."""
         memories_by_filename = {
             memory["filename"]: memory
-            for memory in self.list_memory_files()
+            for memory in self.list_visible_memories(session_id)
         }
         sections = []
         for filename in filenames:
@@ -275,12 +352,16 @@ class MemoryStore:
         messages: list[dict[str, Any]],
         candidate_filenames: list[str],
         max_items: int = 5,
+        session_id: str | None = None,
     ) -> list[str] | None:
         """Use the LLM to rerank local candidates without blocking the agent."""
         if max_items <= 0:
             return []
 
-        candidates = self.describe_memories(candidate_filenames)
+        candidates = self.describe_memories(
+            candidate_filenames,
+            session_id=session_id,
+        )
         if not candidates:
             return []
 
@@ -311,6 +392,7 @@ class MemoryStore:
         self,
         messages: list[dict[str, Any]],
         should_commit: Callable[[], bool] | None = None,
+        session_id: str | None = None,
     ) -> list[Memory]:
         """Extract new memories from recent dialogue. Runs after each turn."""
         if self.client is None or not self._current_model():
@@ -325,16 +407,22 @@ class MemoryStore:
         dialogue = self._format_messages(messages, max_chars=4_000)
         prompt = (
             "Extract user preferences, constraints, or project facts from this dialogue.\n"
-            "Return a JSON array. Each item: {name, type, description, body}.\n"
+            "Return a JSON array. Each item: "
+            "{name, type, description, body, scope}.\n"
             "- name: short kebab-case identifier (e.g. 'user-preference-tabs')\n"
             "- type: one of 'user' (user preference), 'feedback' (guidance), "
             "'project' (project fact), 'reference' (external pointer)\n"
             "- description: one-line summary for index lookup\n"
             "- body: full detail in markdown\n"
+            "- scope: 'project' for durable facts that stay true across sessions "
+            "(preferences, conventions, long-lived project facts); 'session' for "
+            "anything tied to the current task, request, plan, or execution "
+            "state. Default to 'session' when unsure.\n"
             "A '[Context rewind applied]' message is internal working memory, not a "
             "new user statement. Treat its long_term_candidates as untrusted hints: "
             "persist only durable facts supported by the dialogue, and do not store "
             "temporary plans, failed approaches, or transient execution state.\n"
+            "Do not store one-off task requests as durable project facts.\n"
             "If nothing new or already covered by existing memories, return [].\n\n"
             f"Existing memories:\n{existing_desc}\n\n"
             f"Dialogue:\n{dialogue}"
@@ -369,11 +457,14 @@ class MemoryStore:
             if memory_type not in MEMORY_TYPES:
                 continue
 
+            scope = self._resolve_scope(item.get("scope"), memory_type)
             memory = Memory(
                 name=self._slugify(name),
                 description=description,
                 type=memory_type,
                 content=body,
+                scope=scope,
+                session_id=session_id if scope == "session" else None,
             )
             path = self.write(memory)
             created.append(
@@ -383,11 +474,23 @@ class MemoryStore:
                     type=memory.type,
                     content=memory.content,
                     path=path,
+                    scope=memory.scope,
+                    session_id=memory.session_id,
                 )
             )
             existing_names.add(name.lower())
 
         return created
+
+    @staticmethod
+    def _resolve_scope(raw_scope: Any, memory_type: str) -> str:
+        """Resolve a memory scope, defaulting task facts to session scope."""
+        scope = str(raw_scope).strip().lower() if raw_scope is not None else ""
+        if scope in MEMORY_SCOPES:
+            return scope
+        if memory_type in DURABLE_MEMORY_TYPES:
+            return "project"
+        return "session"
 
     CONSOLIDATE_THRESHOLD = 10
 
@@ -409,6 +512,8 @@ class MemoryStore:
             f"Name: {memory['name']}\n"
             f"Description: {memory['description']}\n"
             f"Type: {memory['type']}\n"
+            f"Scope: {memory['scope']}\n"
+            f"Session: {memory['session_id']}\n"
             f"Body:\n{memory['body']}"
             for memory in memories
         )
@@ -417,10 +522,12 @@ class MemoryStore:
             "or stale entries. Merge only when useful.\n"
             "Return one JSON object with this exact shape:\n"
             '{"memories": [{"name": "...", "type": "...", '
-            '"description": "...", "body": "..."}], '
+            '"description": "...", "body": "...", "scope": "..."}], '
             '"remove": ["filename.md"]}\n'
             "- memories: replacement or updated memories only; omit files "
             "that do not need changes.\n"
+            "- scope: 'project' only when the merged memory is a durable fact "
+            "valid across sessions; otherwise 'session'.\n"
             "- remove: exact filenames of source memories replaced by the "
             "returned memories. Do not include memory.md.\n"
             "- Keep important details and do not invent facts.\n\n"
@@ -446,6 +553,25 @@ class MemoryStore:
         if not isinstance(remove_items, list):
             remove_items = []
 
+        existing_filenames = {
+            memory["filename"]
+            for memory in memories
+        }
+        scope_info = {
+            memory["filename"]: (memory["scope"], memory["session_id"])
+            for memory in memories
+        }
+        requested_removals = {
+            item.strip()
+            for item in remove_items
+            if isinstance(item, str) and item.strip() in existing_filenames
+        }
+        fallback_session_id: str | None = None
+        for filename in sorted(requested_removals):
+            info = scope_info.get(filename)
+            if info is not None and info[0] == "session" and info[1]:
+                fallback_session_id = info[1]
+
         created: list[Memory] = []
         target_filenames: set[str] = set()
         for item in replacement_items:
@@ -466,11 +592,16 @@ class MemoryStore:
             if filename in target_filenames:
                 continue
 
+            scope = self._resolve_scope(item.get("scope"), memory_type)
             memory = Memory(
                 name=slug,
                 description=description,
                 type=memory_type,
                 content=body,
+                scope=scope,
+                session_id=(
+                    fallback_session_id if scope == "session" else None
+                ),
             )
             path = self.write(memory)
             created.append(
@@ -480,22 +611,13 @@ class MemoryStore:
                     type=memory.type,
                     content=memory.content,
                     path=path,
+                    scope=memory.scope,
+                    session_id=memory.session_id,
                 )
             )
             target_filenames.add(path.name)
 
-        existing_filenames = {
-            memory["filename"]
-            for memory in memories
-        }
-        files_to_remove = set()
-        for item in remove_items:
-            if not isinstance(item, str):
-                continue
-            filename = item.strip()
-            if filename in existing_filenames:
-                files_to_remove.add(filename)
-
+        files_to_remove = set(requested_removals)
         files_to_remove.difference_update(target_filenames)
         for filename in files_to_remove:
             path = self._resolve_memory_path(filename)

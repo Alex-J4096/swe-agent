@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import re
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -22,24 +24,71 @@ from prompt_toolkit.formatted_text import ANSI
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
+# Terminal width with a sane fallback.
+def _term_width() -> int:
+    try:
+        return os.get_terminal_size().columns
+    except (AttributeError, ValueError, OSError):
+        return 80
+
 
 @dataclass(frozen=True)
 class Theme:
     """Semantic terminal colors used by the renderer."""
 
-    accent: str = "\033[96m"
-    muted: str = "\033[90m"
-    success: str = "\033[92m"
-    warning: str = "\033[93m"
-    error: str = "\033[91m"
-    border: str = "\033[94m"
+    # Primary palette — inspired by modern CLI agents.
+    accent: str = "\033[38;5;75m"       # Soft blue
+    accent_bold: str = "\033[1;38;5;75m"
+    muted: str = "\033[38;5;243m"       # Neutral gray
+    dim: str = "\033[2m"                # Dimmed text
+    success: str = "\033[38;5;114m"     # Green
+    warning: str = "\033[38;5;221m"     # Yellow/amber
+    error: str = "\033[38;5;204m"       # Rose/red
+    border: str = "\033[38;5;240m"      # Dark border
+    info: str = "\033[38;5;117m"        # Light cyan
+    highlight: str = "\033[38;5;183m"   # Soft purple
+    white: str = "\033[97m"             # Bright white
+    bold: str = "\033[1m"
     reset: str = "\033[0m"
+
+    # Gradient stops for the banner (blue → purple → pink).
+    banner_gradient: tuple[str, ...] = (
+        "\033[38;5;75m",
+        "\033[38;5;111m",
+        "\033[38;5;147m",
+        "\033[38;5;183m",
+        "\033[38;5;218m",
+    )
+
+
+# ── Icons ────────────────────────────────────────────────────────────────────
+
+ICON_TOOL = "▶"
+ICON_SUCCESS = "✔"
+ICON_FAIL = "✘"
+ICON_AGENT = "◆"
+ICON_USER = "❯"
+ICON_NOTICE = "●"
+ICON_WARN = "⚠"
+ICON_ERROR = "✘"
+ICON_KEY = "🔑"
+ICON_THINKING = "◇"
 
 
 class ThinkingIndicator:
     """Animate a single status line while a model request is in flight."""
 
     FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧")
+
+    # The dots cycle through a subtle gradient.
+    GRADIENT = (
+        "\033[38;5;75m",
+        "\033[38;5;111m",
+        "\033[38;5;147m",
+        "\033[38;5;183m",
+        "\033[38;5;147m",
+        "\033[38;5;111m",
+    )
 
     def __init__(
         self,
@@ -55,6 +104,7 @@ class ThinkingIndicator:
         self._message = "Thinking"
         self._message_lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._start_time: float | None = None
 
     def start(self, message: str = "Thinking") -> None:
         """Start the animation if output is an interactive terminal."""
@@ -68,6 +118,7 @@ class ThinkingIndicator:
             return
 
         self._stop.clear()
+        self._start_time = time.monotonic()
         self._thread = threading.Thread(
             target=self._run,
             name="thinking-indicator",
@@ -80,13 +131,25 @@ class ThinkingIndicator:
         return self._thread is not None and self._thread.is_alive()
 
     def _run(self) -> None:
-        for frame in itertools.cycle(self.FRAMES):
+        reset = "\033[0m"
+        for idx, frame in enumerate(itertools.cycle(self.FRAMES)):
             if self._stop.is_set():
                 break
 
+            color = self.GRADIENT[idx % len(self.GRADIENT)]
             with self._message_lock:
                 message = self._message
-            self.output.write(f"\r\033[2K  {frame} {message}")
+
+            elapsed = ""
+            if self._start_time is not None:
+                secs = time.monotonic() - self._start_time
+                if secs >= 1.0:
+                    elapsed = f" \033[38;5;243m{secs:.0f}s{reset}"
+
+            self.output.write(
+                f"\r\033[2K  {color}{frame}{reset}"
+                f" \033[38;5;243m{message}{reset}{elapsed}"
+            )
             self.output.flush()
             if self._stop.wait(self.interval):
                 break
@@ -102,6 +165,7 @@ class ThinkingIndicator:
         self.output.write("\r\033[2K")
         self.output.flush()
         self._thread = None
+        self._start_time = None
 
 
 class ConsoleRenderer:
@@ -146,30 +210,82 @@ class ConsoleRenderer:
         else:
             print(text, file=self.output)
 
+    def _separator(self, char: str = "─", width: int | None = None) -> None:
+        """Print a subtle full-width rule."""
+        w = min(width or _term_width(), _term_width())
+        self._write(self._paint(char * w, self.theme.border))
+
+    # ── Welcome ──────────────────────────────────────────────────────────
+
     def show_welcome(self, rendered_panel: str) -> None:
-        """Show the startup panel, coloring only its structural border."""
+        """Show the startup panel with clean semantic styling."""
         lines = [self._safe(line) for line in rendered_panel.splitlines()]
         if not lines:
             return
 
-        for index, line in enumerate(lines):
-            if index in (0, len(lines) - 1):
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                self._write()
+                continue
+
+            # Boxed panel top/bottom borders (e.g. ╭───╮, ╰───╯, ┏━━━┓, ┗━━━┛)
+            if stripped.startswith(("╭", "╰", "┌", "└", "┏", "┗")) and stripped.endswith(("╮", "╯", "┐", "┘", "┓", "┛")):
                 self._write(self._paint(line, self.theme.border))
                 continue
 
-            left, content, right = line[0], line[1:-1], line[-1]
-            self._write(
-                f"{self._paint(left, self.theme.border)}{content}"
-                f"{self._paint(right, self.theme.border)}"
-            )
+            # Boxed panel side borders (e.g. │ content │)
+            if stripped.startswith("│") and stripped.endswith("│") and len(stripped) >= 2:
+                leading = line[:len(line) - len(line.lstrip())]
+                content = stripped[1:-1]
+                b = self._paint("│", self.theme.border)
+                self._write(f"{leading}{b}{content}{b}")
+                continue
+
+            # Horizontal dividers (e.g. ─────── or ━━━━━━━)
+            if all(ch in "─━-=" for ch in stripped):
+                self._write(self._paint(line, self.theme.border))
+                continue
+
+            # Title line with icon (e.g. "  ◆ SWE CLI")
+            if stripped.startswith("◆"):
+                parts = stripped.split(maxsplit=1)
+                icon = self._paint(parts[0], self.theme.accent)
+                title = self._paint(parts[1], self.theme.accent_bold) if len(parts) > 1 else ""
+                leading = line[:len(line) - len(line.lstrip())]
+                self._write(f"{leading}{icon} {title}")
+                continue
+
+            # Help command hint (e.g. "  Type /help for available commands.")
+            if "/help" in stripped:
+                leading = line[:len(line) - len(line.lstrip())]
+                before, after = stripped.split("/help", 1)
+                cmd = self._paint("/help", self.theme.accent)
+                before_text = self._paint(before, self.theme.muted)
+                after_text = self._paint(after, self.theme.muted)
+                self._write(f"{leading}{before_text}{cmd}{after_text}")
+                continue
+
+            # Key-value metadata lines (e.g. "  dir       ~/dev/swe-agent")
+            match = re.match(r"^(\s+)([a-zA-Z0-9_-]+)(\s{2,})(.*)$", line)
+            if match:
+                indent, key, spaces, value = match.groups()
+                styled_key = self._paint(key, self.theme.muted)
+                self._write(f"{indent}{styled_key}{spaces}{value}")
+                continue
+
+            self._write(line)
+
         self._write()
 
+    # ── Tool lifecycle ───────────────────────────────────────────────────
+
     def show_tool_request(self, name: str, preview: str = "") -> None:
-        suffix = f"  {self._safe(preview)}" if preview else ""
-        self._write(
-            f"  {self._paint('├─', self.theme.muted)} "
-            f"{self._paint(name, self.theme.accent)}{suffix}"
-        )
+        suffix = f"  {self._paint(self._safe(preview), self.theme.muted)}" if preview else ""
+        icon = self._paint(ICON_TOOL, self.theme.accent)
+        name_label = self._paint(name, self.theme.accent_bold)
+        tree = self._paint("  ├─", self.theme.border)
+        self._write(f"{tree} {icon} {name_label}{suffix}")
 
     def show_tool_result(
         self,
@@ -180,12 +296,13 @@ class ConsoleRenderer:
     ) -> None:
         """Show a compact result line and optionally a tool-owned content block."""
         ok = bool(output.get("ok"))
-        marker = "✓" if ok else "✗"
-        label = "completed" if ok else "failed"
+        marker = ICON_SUCCESS if ok else ICON_FAIL
+        label = "done" if ok else "failed"
         color = self.theme.success if ok else self.theme.error
+        tree = self._paint("  └─", self.theme.border)
         self._write(
-            f"  {self._paint('└─', self.theme.muted)} "
-            f"{self._paint(marker, color)} {self._safe(name)} "
+            f"{tree} {self._paint(marker, color)} "
+            f"{self._paint(name, self.theme.muted)} "
             f"{self._paint(label, color)}"
         )
 
@@ -194,13 +311,19 @@ class ConsoleRenderer:
             return
 
         if not ok and output.get("error"):
-            self._write(f"    Error: {self._safe(output['error'])}")
+            err_text = self._safe(output["error"])
+            self._write(
+                f"       {self._paint(ICON_ERROR, self.theme.error)} "
+                f"{self._paint(err_text, self.theme.error)}"
+            )
 
         if show_content:
             content = output.get("content")
             if isinstance(content, str) and content:
                 for line in self._safe(content).splitlines():
-                    self._write(f"    {line}")
+                    self._write(f"       {self._paint(line, self.theme.muted)}")
+
+    # ── Team plan ────────────────────────────────────────────────────────
 
     def show_team_plan(self, plan: object) -> None:
         """Render the complete proposed plan at the approval boundary."""
@@ -209,14 +332,25 @@ class ConsoleRenderer:
         plan_id = self._safe(plan.get("plan_id", "unknown"))
         goal = self._safe(plan.get("goal", ""))
         status = self._safe(plan.get("status", "awaiting_approval"))
-        self._write(f"    Plan ID: {plan_id}")
-        self._write(f"    Status: {status}")
-        self._write(f"    Goal: {goal}")
+
+        self._write()
+        self._write(
+            f"  {self._paint('Plan', self.theme.accent_bold)}  "
+            f"{self._paint(plan_id, self.theme.highlight)}"
+        )
+        self._write(
+            f"  {self._paint('Status:', self.theme.muted)} {status}"
+        )
+        self._write(
+            f"  {self._paint('Goal:', self.theme.muted)} {goal}"
+        )
 
         tasks = plan.get("tasks", [])
         if not isinstance(tasks, list):
             tasks = []
-        self._write(f"    Tasks ({len(tasks)}):")
+        self._write(
+            f"  {self._paint(f'Tasks ({len(tasks)}):', self.theme.muted)}"
+        )
         for index, task in enumerate(tasks, start=1):
             if not isinstance(task, dict):
                 continue
@@ -228,27 +362,44 @@ class ConsoleRenderer:
                 depends_on = []
             owner_hint = self._safe(task.get("owner_hint") or "auto")
             workspace = self._safe(task.get("workspace_mode") or "repo")
-            self._write(f"      {index}. [{key}] {subject}")
-            if description:
-                self._write(f"         Description: {description}")
+
             self._write(
-                "         Depends on: "
-                f"{', '.join(self._safe(item) for item in depends_on) or 'none'}"
+                f"    {self._paint(f'{index}.', self.theme.accent)} "
+                f"{self._paint(f'[{key}]', self.theme.highlight)} {subject}"
             )
-            self._write(f"         Owner: {owner_hint}")
-            self._write(f"         Workspace: {workspace}")
-        self._write(f"    Approve with: /team approve {plan_id}")
+            if description:
+                self._write(
+                    f"       {self._paint(description, self.theme.muted)}"
+                )
+            deps_text = (
+                ", ".join(self._safe(item) for item in depends_on) or "none"
+            )
+            self._write(
+                f"       {self._paint('depends:', self.theme.muted)} {deps_text}  "
+                f"{self._paint('owner:', self.theme.muted)} {owner_hint}  "
+                f"{self._paint('workspace:', self.theme.muted)} {workspace}"
+            )
+        self._write()
+        self._write(
+            f"  {self._paint('→', self.theme.accent)} "
+            f"Approve with: {self._paint(f'/team approve {plan_id}', self.theme.accent_bold)}"
+        )
+
+    # ── Messages ─────────────────────────────────────────────────────────
 
     def show_assistant(self, content: str) -> None:
-        """Render a model response with a width-independent open rail."""
+        """Render a model response with a clean left-border rail."""
         safe_content = self._safe(content).strip()
         if not safe_content:
             return
 
-        self._write(self._paint("╭─ assistant", self.theme.border))
+        icon = self._paint(ICON_AGENT, self.theme.accent)
+        label = self._paint("assistant", self.theme.accent_bold)
+        self._write(f"  {icon} {label}")
+        self._write()
         for line in safe_content.splitlines():
-            self._write(f"{self._paint('│', self.theme.border)} {line}")
-        self._write(self._paint("╰─", self.theme.border))
+            bar = self._paint("  │", self.theme.border)
+            self._write(f"{bar}  {line}")
         self._write()
 
     def show_user(self, content: str) -> None:
@@ -257,9 +408,12 @@ class ConsoleRenderer:
         if not safe_content:
             return
 
+        icon = self._paint(ICON_USER, self.theme.highlight)
         for line in safe_content.splitlines():
-            self._write(f"{self._paint('›', self.theme.accent)} {line}")
+            self._write(f"  {icon} {line}")
         self._write()
+
+    # ── History replay ───────────────────────────────────────────────────
 
     def show_history(
         self,
@@ -335,14 +489,17 @@ class ConsoleRenderer:
 
         return len(recent_history)
 
+    # ── Notices & logs ───────────────────────────────────────────────────
+
     def show_notice(self, message: str) -> None:
-        self._write(f"{self._paint('•', self.theme.accent)} {self._safe(message)}")
+        icon = self._paint(ICON_NOTICE, self.theme.info)
+        self._write(f"  {icon} {self._safe(message)}")
 
     def show_error(self, message: str, module: str | None = None) -> None:
         prefix = f"{module}: " if module else ""
+        icon = self._paint(ICON_ERROR, self.theme.error)
         self._write(
-            f"{self._paint('✗', self.theme.error)} "
-            f"{self._safe(prefix + message)}"
+            f"  {icon} {self._paint(self._safe(prefix + message), self.theme.error)}"
         )
 
     def show_log(
@@ -354,27 +511,28 @@ class ConsoleRenderer:
         level = level.upper()
         color = {
             "DEBUG": self.theme.muted,
-            "INFO": self.theme.accent,
+            "INFO": self.theme.info,
             "WARNING": self.theme.warning,
             "ERROR": self.theme.error,
         }.get(level, self.theme.muted)
         location = f" {module}" if module else ""
-        self._write(
-            f"{self._paint(f'[{level.lower()}]', color)}"
-            f"{self._paint(location, self.theme.muted)} "
-            f"{self._safe(message)}"
-        )
+        tag = self._paint(f"[{level.lower()}]", color)
+        loc = self._paint(location, self.theme.muted)
+        self._write(f"  {tag}{loc} {self._safe(message)}")
+
+    # ── Permissions ──────────────────────────────────────────────────────
 
     def permission_question(self, tool_name: str) -> str:
         question = (
-            f"  ? Allow {tool_name}? "
+            f"  {ICON_WARN} Allow {tool_name}? "
             "[y] once / [t] turn / [a] session / [n] deny "
         )
         return self._paint(question, self.theme.warning)
 
     def team_plan_continue_question(self) -> str:
         question = (
-            "  ? Continue Agent Loop? [y] continue / [n] return to prompt "
+            f"  {ICON_NOTICE} Continue Agent Loop? "
+            "[y] continue / [n] return to prompt "
         )
         return self._paint(question, self.theme.warning)
 
@@ -387,7 +545,7 @@ class ConsoleRenderer:
         scope: str | None = None,
         reason: str | None = None,
     ) -> None:
-        marker = "✓" if allowed else "✗"
+        marker = ICON_SUCCESS if allowed else ICON_FAIL
         decision = "Allowed" if allowed else "Denied"
         color = self.theme.success if allowed else self.theme.error
         suffix = f" ({reason})" if reason else ""

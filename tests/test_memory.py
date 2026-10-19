@@ -282,6 +282,7 @@ class MemoryStoreTests(unittest.TestCase):
                 self,
                 messages: list[dict[str, str]],
                 should_commit=None,
+                session_id=None,
             ) -> list[Memory]:
                 self.received.append(messages)
                 self.steps.append("extract")
@@ -314,7 +315,7 @@ class MemoryStoreTests(unittest.TestCase):
                 self.committed = False
                 self.consolidated = False
 
-            def extract_memories(self, messages, should_commit=None):
+            def extract_memories(self, messages, should_commit=None, session_id=None):
                 started.set()
                 release.wait(timeout=2)
                 if should_commit is None or should_commit():
@@ -373,11 +374,15 @@ class MemoryStoreTests(unittest.TestCase):
             def memory_revision(self) -> str:
                 return "rev-1"
 
-            def select_relevant_memories(self, messages, max_items, use_llm):
+            def select_relevant_memories(
+                self, messages, max_items, use_llm, session_id=None
+            ):
                 self.messages = messages
                 return ["project-language.md"]
 
-            def refine_relevant_memories(self, messages, candidates, max_items):
+            def refine_relevant_memories(
+                self, messages, candidates, max_items, session_id=None
+            ):
                 return ["project-language.md"]
 
         store = FakeStore()
@@ -399,6 +404,127 @@ class MemoryStoreTests(unittest.TestCase):
             ),
             ["project-language.md"],
         )
+
+class MemoryScopeTests(unittest.TestCase):
+    def test_session_memories_do_not_leak_into_other_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.write_memory_file(
+                "task-plan",
+                "project",
+                "Sorting task plan",
+                "Implement sort.py.",
+                scope="session",
+                session_id="session-a",
+            )
+            store.write_memory_file(
+                "user-preference-tabs",
+                "user",
+                "User prefers tabs",
+                "Use tabs.",
+            )
+            messages = [
+                {"role": "user", "content": "Sorting task plan for sort.py"}
+            ]
+
+            self.assertIn(
+                "task-plan.md",
+                store.select_relevant_memories(
+                    messages,
+                    session_id="session-a",
+                ),
+            )
+            self.assertNotIn(
+                "task-plan.md",
+                store.select_relevant_memories(
+                    messages,
+                    session_id="session-b",
+                ),
+            )
+            self.assertNotIn("task-plan", store.visible_index("session-b"))
+            self.assertIn(
+                "user-preference-tabs",
+                store.visible_index("session-b"),
+            )
+
+    def test_legacy_memories_are_inert_until_rescoped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.memory_dir.mkdir(parents=True, exist_ok=True)
+            (store.memory_dir / "old-task.md").write_text(
+                "---\nname: old-task\ndescription: Old task\n"
+                "type: project\n---\n\nDo the old task.\n",
+                encoding="utf-8",
+            )
+            (store.memory_dir / "old-pref.md").write_text(
+                "---\nname: old-pref\ndescription: Old preference\n"
+                "type: user\n---\n\nPrefer X.\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(store.list_visible_memories("new-session"), [])
+
+            # Re-tagging a legacy memory as project scope makes it durable.
+            (store.memory_dir / "old-pref.md").write_text(
+                "---\nname: old-pref\ndescription: Old preference\n"
+                "type: user\nscope: project\n---\n\nPrefer X.\n",
+                encoding="utf-8",
+            )
+            visible = {
+                memory["filename"]
+                for memory in store.list_visible_memories("new-session")
+            }
+            self.assertIn("old-pref.md", visible)
+            self.assertNotIn("old-task.md", visible)
+
+    def test_extraction_records_session_provenance(self) -> None:
+        response = (
+            '[{"name":"task-state","type":"project",'
+            '"description":"Current task state",'
+            '"body":"Working on sorting."}]'
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(
+                Path(temp_dir),
+                client=fake_client(response),
+                model="test-model",
+            )
+            created = store.extract_memories(
+                [{"role": "user", "content": "Implement sorting."}],
+                session_id="session-a",
+            )
+
+            self.assertEqual(created[0].scope, "session")
+            self.assertEqual(created[0].session_id, "session-a")
+            self.assertEqual(
+                [
+                    memory["filename"]
+                    for memory in store.list_visible_memories("session-a")
+                ],
+                ["task-state.md"],
+            )
+            self.assertEqual(store.list_visible_memories("session-b"), [])
+
+    def test_extraction_defaults_preferences_to_project_scope(self) -> None:
+        response = (
+            '[{"name":"user-pref","type":"user",'
+            '"description":"A preference","body":"Prefer X."}]'
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(
+                Path(temp_dir),
+                client=fake_client(response),
+                model="test-model",
+            )
+            created = store.extract_memories(
+                [{"role": "user", "content": "I prefer X."}],
+                session_id="session-a",
+            )
+
+            self.assertEqual(created[0].scope, "project")
+            self.assertIsNone(created[0].session_id)
+            self.assertEqual(store.list_visible_memories("session-b")[0]["filename"], "user-pref.md")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,12 +22,18 @@ class MemoryWorker:
     def submit(
         self,
         messages: list[dict[str, Any]],
+        session_id: str | None = None,
     ) -> Future[tuple[list[Memory], list[Memory]]]:
         """Queue an immutable snapshot of one completed agent round."""
         snapshot = deepcopy(messages)
         with self._lock:
             generation = self._generation
-            future = self._executor.submit(self._process, generation, snapshot)
+            future = self._executor.submit(
+                self._process,
+                generation,
+                snapshot,
+                session_id,
+            )
             self._futures.add(future)
         future.add_done_callback(self._discard_future)
         return future
@@ -56,6 +62,7 @@ class MemoryWorker:
         self,
         generation: int,
         messages: list[dict[str, Any]],
+        session_id: str | None = None,
     ) -> tuple[list[Memory], list[Memory]]:
         extracted: list[Memory] = []
         consolidated: list[Memory] = []
@@ -67,6 +74,7 @@ class MemoryWorker:
             extracted = self.store.extract_memories(
                 messages,
                 should_commit=lambda: self._is_current(generation),
+                session_id=session_id,
             )
         except Exception:
             # Memory maintenance must not affect the agent's next turn.
