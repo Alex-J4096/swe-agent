@@ -17,6 +17,39 @@ def test_tool_preview_is_compact_and_truncated() -> None:
     assert len(preview) == 12
 
 
+def test_shell_failure_displays_stderr_when_error_field_is_absent():
+    renderer, output = make_renderer()
+    renderer.show_tool_result("run_bash", {
+        "ok": False,
+        "stderr": "No supported sandbox backend is available; host execution was not attempted",
+        "exit_code": -1,
+    })
+    assert "failed" in output.getvalue()
+    assert "No supported sandbox backend" in output.getvalue()
+
+
+def test_permission_prompt_separates_question_choices_and_input(monkeypatch):
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    import src.ui.console as console
+    monkeypatch.setattr(console.sys, "stdin", TTY())
+    renderer = ConsoleRenderer(output=TTY(), use_color=False)
+    question = renderer.permission_question("run_bash")
+    assert "Allow run_bash?\n" in question
+    assert "\n    [y/1]" in question
+    assert "\n    [n/3]" in question
+    assert "\n  Press a key (no Enter needed): " in question
+    once_only = renderer.permission_question("run_bash", reusable=False)
+    assert "[a/2]" not in once_only and "[t]" not in once_only
+
+
+def test_non_tty_permission_prompt_explains_enter_requirement():
+    renderer, _ = make_renderer()
+    assert "Enter choice and press Enter" in renderer.permission_question("run_bash")
+
+
 def test_thinking_indicator_is_disabled_for_non_tty_output() -> None:
     renderer, output = make_renderer()
 
@@ -229,14 +262,3 @@ def test_show_welcome_emits_no_ansi_when_color_disabled() -> None:
     rendered = output.getvalue()
     assert "\x1b" not in rendered
     assert "Type /help for available commands." in rendered
-
-
-def test_shell_failure_displays_stderr_when_error_field_is_absent():
-    renderer, output = make_renderer()
-    renderer.show_tool_result("run_bash", {
-        "ok": False,
-        "stderr": "No supported sandbox backend is available; host execution was not attempted",
-        "exit_code": -1,
-    })
-    assert "failed" in output.getvalue()
-    assert "No supported sandbox backend" in output.getvalue()

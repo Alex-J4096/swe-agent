@@ -17,7 +17,7 @@ uv run python -m pytest -q --basetemp=.swe-agent/pytest-temp
 | 文件 | 验证内容 |
 | --- | --- |
 | `test_keys_management.py`、`test_model_selection_errors.py` | 密钥管理、来源、错误脱敏与模型选择 |
-| `test_selection_menu.py`、`test_slash_commands.py` | 模糊搜索、键盘选择、命令和补全 |
+| `test_selection_menu.py`、`test_slash_commands.py`、`test_terminal.py` | 模糊搜索、键盘选择、命令补全与单键审批 |
 | `test_permission_scopes.py`、`test_permissions.py`、`test_approval_runtime.py` | 精确授权、审批、拒绝与停止 |
 | `test_persistence.py`、`test_context_rewind.py` | 数据迁移、会话恢复与上下文分支 |
 | `test_sandbox.py`、`test_interrupt.py` | 执行边界、环境清洗与中断 |

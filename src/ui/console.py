@@ -557,9 +557,13 @@ class ConsoleRenderer:
 
     def permission_question(self, tool_name: str, *, reusable: bool = True) -> str:
         question = (
-            f"  {ICON_WARN} Allow {tool_name}? "
-            + ("[y/1] once / [t] turn / [a/2] session (exact operation) / " if reusable else "[y/1] once / ")
-            + "[n/3] deny and adjust / [s/Esc] stop task "
+            f"  {ICON_WARN} Allow {tool_name}?\n"
+            + "    [y/1] once"
+            + (" / [t] turn / [a/2] session (exact operation)" if reusable else "")
+            + "\n    [n/3] deny and adjust / [s/Esc] stop task\n"
+            + ("  Press a key (no Enter needed): "
+               if self.output.isatty() and sys.stdin.isatty()
+               else "  Enter choice and press Enter: ")
         )
         return self._paint(question, self.theme.warning)
 

@@ -10,6 +10,7 @@ from typing import Tuple
 
 
 ESCAPE = "\x1b"
+CONFIRMATION_KEYS = frozenset({"y", "t", "a", "n", "s", "c", "1", "2", "3"})
 
 
 def read_confirmation(question: str) -> Tuple[str, bool]:
@@ -24,6 +25,28 @@ def _read_confirmation(question: str) -> Tuple[str, bool]:
             return input(question).strip().lower(), False
         except (EOFError, KeyboardInterrupt):
             return ESCAPE, False
+
+    if os.name == "nt":
+        import msvcrt
+
+        sys.stdout.write(question)
+        sys.stdout.flush()
+        try:
+            while True:
+                value = msvcrt.getwch()
+                if value in {"\x00", "\xe0"}:
+                    msvcrt.getwch()  # Ignore arrows and function keys.
+                    continue
+                if value in {ESCAPE, "\x03", "\x04", "\x1a"}:
+                    return ESCAPE, True
+                answer = value.lower()
+                if answer in CONFIRMATION_KEYS:
+                    # getwch does not echo; make the selected key visible.
+                    sys.stdout.write(answer)
+                    sys.stdout.flush()
+                    return answer, True
+        except (EOFError, KeyboardInterrupt):
+            return ESCAPE, True
 
     try:
         import termios
@@ -47,7 +70,7 @@ def _read_confirmation(question: str) -> Tuple[str, bool]:
             if value in {ESCAPE, "\x03", "\x04"}:
                 return ESCAPE, True
             answer = value.lower()
-            if answer in {"y", "t", "a", "n", "s", "c", "1", "2", "3"}:
+            if answer in CONFIRMATION_KEYS:
                 return answer, True
     finally:
         termios.tcsetattr(file_descriptor, termios.TCSADRAIN, previous)
