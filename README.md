@@ -1,148 +1,103 @@
 # Toy SWE Agent
 
-这是一个用于学习和实验的基于终端的编程智能体项目，具备以下的功能：
+用于学习与实验的终端编程助手：对话、文件与 Shell 工具、会话恢复、Memory、子代理和 Agent Teams。
 
-- LLM模型与工具调用
-- Agent 循环、子 Agent 和后台任务
-- 会话持久化、checkpoint 上下文回退、上下文压缩与项目记忆
-- 文件操作、Shell sandbox、统一权限审批和 Skill 加载
+## 快速开始
 
-本项目主要面向学习用途，当前实现不保证生产环境所需的稳定性、隔离性和安全性。运行 Agent 生成的命令或文件修改前，请确认当前工作目录和权限范围符合预期。
-
-## 基本功能
-
-- 通过 OpenAI Compatible API与模型进行对话
-- 读取、写入和编辑当前 workspace 内的文件
-- 在 OS sandbox 中执行 Shell 命令，仅对能力升级进行审批
-- Todo、任务和后台任务管理
-- 委派任务给子Agent
-- 从`.agents/skills/`加载项目Skill
-- 保存和恢复历史会话
-- 自动维护项目级长期记忆
-- Memory 本地快速检索与后台 LLM 精筛
-- 模型可通过 `rewind_context` 主动回退工作记忆并保留结构化结论
-- 使用 `/help`、`/model`、`/sessions` 等斜杠命令管理会话
-
-## 环境要求
-
-- Python 3.13 或更高版本
-- 一个可用的LLM API Key
-- 推荐使用 [uv](https://docs.astral.sh/uv/) 管理依赖和运行项目
-- Linux 运行 Shell 工具时需要安装 `bubblewrap`；macOS 使用系统 `sandbox-exec`
-
-## 安装与运行
+需要 Python ≥ 3.13，推荐使用 [uv](https://docs.astral.sh/uv/)。
 
 ```bash
-git clone <repository-url>
-cd swe-agent
 uv sync
-```
-
-启动程序：
-
-```bash
 uv run python main.py
 ```
 
-启动后可以直接输入自然语言任务，例如：
+在程序中配置密钥、选择模型，再输入任务：
 
 ```text
-请分析当前项目的目录结构，并告诉我如何运行测试
+/keys add siliconflow
+/model
+请分析当前项目，并告诉我如何运行测试
 ```
+
+`/model` 同时支持输入文字模糊搜索和 ↑↓ 选择；Enter 确认、Esc 取消、Ctrl+U 清空搜索。长列表支持 PgUp/PgDn、Home/End。
+
+任务运行中（包括 Preparing／Thinking）第一次按 Esc 显示中止提示，第二次按 Esc 停止当前轮；Ctrl+C 立即停止。会话与已有改动保留，回到输入框后可输入“继续”。这不是冻结远端请求，停止后迟到的模型结果会被丢弃。审批窗口里的 Esc 仍直接停止。
+
+> Shell 后端：Linux 需要 bubblewrap；macOS 使用 sandbox-exec。Windows 原生环境暂不支持 Shell 沙箱；缺少后端时拒绝执行 Shell，不回退到宿主。
 
 ## 常用命令
 
-在交互界面中输入以下命令：
-
-| 命令 | 说明 |
+| 命令 | 用途 |
 | --- | --- |
-| `/help` | 查看所有斜杠命令 |
-| `/status` | 查看当前模型、目录、会话、context branch 和 checkpoint 信息 |
-| `/model` | 先选择 Provider，再从该 Provider 提供的模型中切换 |
-| `/memory [on\|off\|status]` | 开启、关闭或查看当前 Session 的 Memory |
-| `/permissions` | 查看、批准、拒绝或撤销权限请求与授权 |
-| `/new [title]` | 创建新的持久化会话 |
-| `/sessions [limit]` | 查看已保存的会话 |
-| `/resume <session-id>` | 恢复指定会话 |
-| `/clear` | 清空当前会话内容 |
-| `/compact` | 压缩当前会话上下文 |
-| `/debug` | 查看格式化后的会话历史 |
+| `/help` | 查看命令 |
+| `/model` | 搜索并选择服务商、模型 |
+| `/keys` | 查看密钥；[完整操作](docs/KEYS.md) |
+| `/permissions` | 处理待审批请求；[审批说明](docs/PERMISSIONS.md) |
+| `/status` | 查看模型、目录、会话和 checkpoint |
+| `/new [title]` | 新建会话 |
+| `/sessions [limit]` | 列出历史会话 |
+| `/resume <session-id>` | 恢复会话；不恢复权限授权 |
+| `/clear` | 清空当前历史、工具状态和 checkpoint 状态 |
+| `/compact` | 将上下文压缩为摘要，保留原始 transcript |
+| `/memory [on\|off\|status]` | 控制当前会话 Memory |
+| `/team` | 启动、审批、查看或停止团队；[团队操作](docs/TEAMS.md) |
+| `/debug` | 查看格式化历史 |
 
-普通 workspace 内开发命令在 OS sandbox 中自动执行；网络访问、破坏性 workspace 操作和未分类扩展 Tool 会请求确认，明确危险的命令直接拒绝。macOS 使用系统 `sandbox-exec`，Linux 需要安装 `bubblewrap`；缺少后端时 Shell fail-closed。
+## 一次任务如何运行
 
-用户提交普通 Prompt 后，程序先显示 `Preparing`，这个过程覆盖 Session 保存、SYSTEM 构建和本地 Memory 检索等准备工作。模型请求期间，交互式终端会在内容区显示 `Thinking` 动画。
+```mermaid
+flowchart LR
+    A[输入任务] --> B[准备会话与 Memory]
+    B --> C[模型]
+    C --> D{调用工具?}
+    D -->|是| E[权限检查与执行]
+    E --> C
+    D -->|否| F[显示回答并保存会话]
+```
 
-非 TTY 输出（例如重定向到日志文件）不会写入终端控制字符。
+| 能力 | 使用方式 |
+| --- | --- |
+| 文件与 Shell | 用自然语言提出任务；需要额外权限时审批 |
+| Memory | 默认开启；本地检索先用，后台精筛结果供后续请求使用 |
+| 上下文回退 | 模型调用 `rewind_context`；保留结论，不撤销实际操作 |
+| Skill | 放入 `.agents/skills/<name>/SKILL.md`，启动扫描、按需加载 |
+| 子代理 | 模型通过 `delegate_task` 委派独立上下文的任务 |
 
-Memory 默认开启。第一轮当前请求只使用本地关键词候选和上一轮已完成的精筛缓存；本轮结束后，精筛会在后台执行，结果供后续请求使用。关闭 Memory 后，当前请求不会注入 Memory，回合结束也不会执行 Memory 抽取。
+## 配置与数据
 
-Runner 会在每次模型 step 前保存稳定 checkpoint。模型判断中间探索已经没有继续保留的价值时，可以单独调用 `rewind_context`：当前对话会恢复到指定 checkpoint，废弃分支归档为 JSONL，目标、完成项、文件变化、外部副作用、关键发现和下一步作为结构化 carry-forward 注入新分支。该操作只回退模型工作记忆，不撤销文件、Shell、网络、审批、任务或 Team 消息。`long_term_candidates` 不会直接写入长期 Memory，而是在本轮结束后由现有 Memory 提取器重新验证。
+内置服务商如下；启动默认使用 SiliconFlow。模型以 `/model` 实际获取的列表为准。
 
-## 配置说明
-
-### API 配置
-
-应用启动时会注册以下三个内置 Provider，默认使用 SiliconFlow：
-
-| Provider | API 地址 | 内置默认模型 |
+| 服务商 ID | API 地址 | 环境变量 |
 | --- | --- | --- |
-| SiliconFlow | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V4-Flash` |
-| OpenAI | `https://api.openai.com/v1` | `gpt-5.6-luna` |
-| OpenCode Go | `https://opencode.ai/zen/go/v1` | `kimi-k3` |
+| `siliconflow` | `https://api.siliconflow.cn/v1` | `SILICONFLOW_API_KEY` |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `opencode-go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
 
-通过 Agent 指令配置 API Key 和模型：
+凭据优先级：**数据库默认密钥 → 环境变量 → 无密钥**。密钥通过隐藏输入获取，请勿放入命令参数。
 
-1. 输入 `/model`。
-2. 选择 Provider。
-3. 如果该 Provider 尚未配置 API Key，按提示输入；输入内容不会回显。
-4. 从该 Provider 获取的模型列表中选择模型。
+| 位置 | 内容 |
+| --- | --- |
+| `~/.swe-agent/state.db` | 服务商、模型、密钥、验证记录和会话 |
+| `SWE_AGENT_DB_PATH` | 覆盖数据库路径的环境变量 |
+| `<workspace>/.swe-agent/` | Memory、任务、团队、checkpoint、分支与压缩记录 |
 
-配置成功后，API Key 会保存到本地数据库，Provider、模型和当前 Session 会立即更新。后续启动时会复用已保存的凭据。三个 Provider 均需提供 OpenAI-compatible 的 models 和 chat completions API。
+状态库包含 API Key，请勿提交到 Git。项目目前用于实验，Shell 沙箱允许修改 workspace；重要改动请使用 Git 保留恢复点。
 
-### 数据存储
-
-- 默认 SQLite 数据库：`~/.swe-agent/state.db`
-- 可通过 `SWE_AGENT_DB_PATH` 指定数据库路径
-- 当前 workspace 下的项目数据默认保存在 `.swe-agent/`，包括记忆、任务、checkpoint、废弃上下文分支和对话压缩结果等
-
-例如：
-
-```bash
-SWE_AGENT_DB_PATH=/tmp/swe-agent-state.db uv run python main.py
-```
-
-API Key 会保存在本地状态库中，请勿将状态库提交到 Git。
-
-### 添加 Skill
-
-在当前项目目录下创建 Skill 文件：
-
-```text
-.agents/skills/<skill-name>/SKILL.md
-```
-
-程序启动时会扫描该目录，并通过 `load_skill` 按需加载 Skill 内容。Skill 的具体格式可参考现有的 Skill 文件或项目架构文档。
-
-## 运行测试
+## 开发与文档
 
 ```bash
 uv run pytest
 ```
 
-## 项目结构
+| 入口 | 内容 |
+| --- | --- |
+| [架构概览](docs/ARCHITECTURE.md) | 模块、运行流程、状态边界与扩展 |
+| [密钥管理](docs/KEYS.md) | list / add / use / test / remove / source / reset |
+| [权限审批](docs/PERMISSIONS.md) | 审批选择、授权范围和后台操作 |
+| [团队操作](docs/TEAMS.md) | 计划审批、任务与 worktree |
+| [人工测试](docs/permission-manual-tests.md) | 权限功能验收步骤 |
 
-```text
-main.py                  # 命令行入口和依赖装配
-src/runtime/             # Agent、Session、子 Agent 运行时
-src/tools/               # 文件、Shell、任务和 Skill 工具
-src/infrastructure/      # Provider、数据库、记忆和会话持久化
-src/utils/slash_commands # 交互式斜杠命令
-src/prompts/             # Agent 系统提示词
-tests/                   # 自动化测试
-docs/ARCHITECTURE.md     # 详细架构说明
-```
-
-更多设计细节请阅读 [ARCHITECTURE.md](ARCHITECTURE.md) 和 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+主要代码：`main.py`（装配）、`src/runtime/`（运行时）、`src/tools/`（工具）、`src/infrastructure/`（存储与客户端）、`src/ui/`（终端）、`src/teams/`（团队）。
 
 ## License
 
