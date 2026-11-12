@@ -30,6 +30,7 @@ class StatusCommand(BaseCommand):
         executor = getattr(bash_tool, "executor", None)
         sandbox_backend = getattr(executor, "backend_name", "unknown")
         sandbox_available = getattr(executor, "available", False)
+        mode = getattr(executor, "execution_mode", "sandbox")
         lines = [
             "Status",
             f"  Provider:    {provider_name}",
@@ -40,7 +41,8 @@ class StatusCommand(BaseCommand):
             f"  Context:     {context.session.context_branch_id} "
             f"({len(context.session.context_checkpoints)} checkpoints, "
             f"generation {context.session.context_generation})",
-            f"  Sandbox:     {sandbox_backend} "
+            f"  Execution:   {mode}" + (" (NO OS SANDBOX; every command requires approval)" if mode == "host" else ""),
+            f"  {'Shell' if mode == 'host' else 'Sandbox'}:     {sandbox_backend} "
             f"({'ready' if sandbox_available else 'unavailable'})",
         ]
         return CommandResult("\n".join(lines))

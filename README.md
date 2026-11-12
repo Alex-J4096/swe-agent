@@ -23,7 +23,21 @@ uv run python main.py
 
 任务运行中（包括 Preparing／Thinking）第一次按 Esc 显示中止提示，第二次按 Esc 停止当前轮；Ctrl+C 立即停止。会话与已有改动保留，回到输入框后可输入“继续”。这不是冻结远端请求，停止后迟到的模型结果会被丢弃。审批窗口里的 Esc 仍直接停止。
 
-> Shell 后端：Linux 需要 bubblewrap；macOS 使用 sandbox-exec。Windows 原生环境暂不支持 Shell 沙箱；缺少后端时拒绝执行 Shell，不回退到宿主。
+> 默认 `sandbox` 模式：Linux 需要 bubblewrap；macOS 使用 sandbox-exec。Windows 原生环境没有沙箱后端，缺少后端时拒绝执行，不自动回退。
+
+无需安装沙箱组件时，可显式启用宿主模式：
+
+```bash
+uv run python main.py --execution-mode host
+```
+
+已在外部目标目录的 PowerShell 中，可直接运行：
+
+```powershell
+& "D:\CodePy\swe-agent\.venv\Scripts\python.exe" "D:\CodePy\swe-agent\main.py" --execution-mode host
+```
+
+`host` 使用 Windows PowerShell／pwsh（其他平台为 sh），每条 Shell 命令单次审批，无 OS 文件／网络隔离。用 `/status` 查看模式；Windows 的 curl 示例使用 `curl.exe --head https://example.com`。启动目录仍是 workspace，但不能阻止命令访问其他目录。
 
 ## 常用命令
 

@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.infrastructure.skill_loader import SkillLoader
+from src.runtime.sandbox import CommandExecutor
 from src.tools.base import BaseTool, ToolContext
 from src.tools.file.edit_file import EditFileTool
 from src.tools.file.read_file import ReadFileTool
@@ -45,13 +46,14 @@ class ToolSet:
         registry: ToolRegistry | None = None,
         skill_loader: SkillLoader | None = None,
         excluded_tools: Iterable[str] = (),
+        command_executor: CommandExecutor | None = None,
     ) -> None:
         self.skill_loader = skill_loader or SkillLoader(
             Path.cwd() / ".agents" / "skills"
         )
         self.registry = registry or ToolRegistry(
             [
-                BashTool(),
+                BashTool(executor=command_executor),
                 ReadFileTool(),
                 WriteFileTool(),
                 EditFileTool(),

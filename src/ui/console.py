@@ -553,7 +553,11 @@ class ConsoleRenderer:
         ):
             self._write(f"    {label}: {self._safe(value)}")
         if request.tool_name == "run_bash":
-            self._write("    Execution: filesystem sandbox remains enforced.")
+            self._write(
+                "    Execution: HOST — NO OS SANDBOX; filesystem and network are not isolated."
+                if "host.execute" in capabilities
+                else "    Execution: filesystem sandbox remains enforced."
+            )
 
     def permission_question(self, tool_name: str, *, reusable: bool = True) -> str:
         question = (

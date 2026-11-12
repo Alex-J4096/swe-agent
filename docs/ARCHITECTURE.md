@@ -47,7 +47,7 @@ flowchart TD
 
 - Runner 负责模型与工具消息配对；被跳过的工具也有结果消息。
 - 拒绝可让模型重新规划；停止结束运行。详见 [权限审批](PERMISSIONS.md)。
-- `Preparing` 表示本地准备，`Thinking` 表示模型请求；非 TTY 不输出动画控制字符。
+- `Preparing` 表示本地准备，`Thinking` 表示模型请求，`Executing <tool>` 表示工具执行；审批等待时不显示动画，结果输出前清除动画。非 TTY 不输出动画控制字符。
 - 前台模型请求在独立线程等待，主线程轮询取消状态；第一次 Esc 提示、第二次 Esc 停止，Ctrl+C 立即停止。迟到结果不写入历史、不执行工具；远端请求可能仍在处理。
 - Windows 使用控制台按键监听，POSIX 使用终端监听与信号；审批提示读键时持有输入锁，监听线程让出终端。
 
@@ -152,6 +152,8 @@ description: 何时使用此 Skill
 团队使用与恢复见 [Agent Teams](TEAMS.md)。
 
 ## 验证入口与限制
+
+Shell 执行器通过 ToolSet 注入：默认 `SandboxedCommandExecutor`；显式 `--execution-mode host` 使用 `HostCommandExecutor`。前台、子代理与团队共享同一配置；权限策略按实际执行器识别宿主模式，`run_bash` 在工具层再次检查 `host.execute` 批准。详情见 [权限审批](PERMISSIONS.md)。
 
 ```bash
 uv run pytest

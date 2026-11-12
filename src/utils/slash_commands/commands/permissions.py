@@ -35,6 +35,7 @@ class PermissionsCommand(BaseCommand):
                         f"    Directory: {request.cwd or '.'}",
                         f"    Permissions: {', '.join(request.capabilities) or request.capability or 'none'}",
                         f"    Reuse: {'exact operation; current loaded session only' if request.reusable else 'once only'}",
+                        f"    Execution: {'HOST — no OS filesystem/network isolation' if 'host.execute' in request.capabilities else 'sandbox / tool policy'}",
                     ]
                 )
             lines.append(

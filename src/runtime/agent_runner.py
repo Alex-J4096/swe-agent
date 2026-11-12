@@ -73,6 +73,7 @@ class AgentRunner:
         approval_runtime: ApprovalRuntime | None = None,
         permission_policy: PermissionPolicy | None = None,
         context_checkpoint_manager: ContextCheckpointManager | None = None,
+        execution_mode: str = "sandbox",
     ) -> None:
         if todo_reminder_interval < 1:
             raise ValueError("todo_reminder_interval must be at least 1")
@@ -89,7 +90,7 @@ class AgentRunner:
         self.max_history_messages = max_history_messages
         self.renderer = renderer or ConsoleRenderer()
         self.approval_runtime = approval_runtime or ApprovalRuntime()
-        self.permission_policy = permission_policy or PermissionPolicy(self.workdir)
+        self.permission_policy = permission_policy or PermissionPolicy(self.workdir, execution_mode)
         self.context_checkpoint_manager = (
             context_checkpoint_manager or ContextCheckpointManager(self.workdir)
         )
@@ -261,7 +262,15 @@ class AgentRunner:
                     )
                     continue
 
-                permission = self.permission_policy.evaluate(
+                policy = self.permission_policy
+                registry = getattr(toolset, "registry", None)
+                shell_tool = registry.get("run_bash") if registry is not None else None
+                executor = getattr(shell_tool, "executor", None)
+                mode = getattr(executor, "execution_mode", policy.execution_mode)
+                workspace = effective_tool_context.workspace_root or self.workdir
+                if mode != policy.execution_mode or workspace.resolve() != policy.workdir:
+                    policy = PermissionPolicy(workspace, mode)
+                permission = policy.evaluate(
                     tool_name,
                     permission_args,
                     session=session,
@@ -832,8 +841,8 @@ class AgentRunner:
             source=source,
             capabilities=tuple(sorted(permission.required_capabilities)),
             cwd=(
-                str((self.workdir / args.get("cwd", ".")).resolve())
-                if tool_name == "run_bash" else str(self.workdir)
+                str(((context.workspace_root or self.workdir) / args.get("cwd", ".")).resolve())
+                if tool_name == "run_bash" else str(context.workspace_root or self.workdir)
             ),
             reusable=permission.reusable,
             risk=permission.risk,

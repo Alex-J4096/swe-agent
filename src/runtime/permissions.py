@@ -85,8 +85,11 @@ class PermissionPolicy:
         }
     )
 
-    def __init__(self, workdir: Path) -> None:
+    def __init__(self, workdir: Path, execution_mode: str = "sandbox") -> None:
+        if execution_mode not in {"sandbox", "host"}:
+            raise ValueError("Execution mode must be sandbox or host")
         self.workdir = workdir.resolve()
+        self.execution_mode = execution_mode
 
     @staticmethod
     def _segments(command: str) -> list[list[str]]:
@@ -116,7 +119,7 @@ class PermissionPolicy:
             tokens.pop(0)
         if not tokens:
             return "", []
-        return Path(tokens[0]).name.lower(), [token.lower() for token in tokens[1:]]
+        return Path(tokens[0]).name.lower().removesuffix(".exe"), [token.lower() for token in tokens[1:]]
 
     def _requires_network(self, command: str) -> bool:
         for segment in self._segments(command):
@@ -223,14 +226,19 @@ class PermissionPolicy:
 
             capabilities: set[str] = set()
             reasons: list[str] = []
+            if self.execution_mode == "host":
+                capabilities.add("host.execute")
+                reasons.append("Execute on host without OS filesystem or network isolation; once only")
             if args.get("network_access") is True or self._requires_network(command):
-                capabilities.add("sandbox.network")
-                reasons.append("Command requires sandbox network access")
+                capabilities.add("host.network" if self.execution_mode == "host" else "sandbox.network")
+                reasons.append("Command uses host network" if self.execution_mode == "host" else "Command requires sandbox network access")
             if self._is_destructive(command):
                 capabilities.add("workspace.destructive")
                 reasons.append("Command may destructively modify the workspace")
             reusable = self._reusable(command)
-            if not reusable and not is_readonly_command(command):
+            if self.execution_mode == "host":
+                reusable = False
+            elif not reusable and not is_readonly_command(command):
                 capabilities.add("shell.opaque")
                 reasons.append("Shell source cannot be safely classified; approval is once only")
             if not capabilities:

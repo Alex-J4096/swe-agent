@@ -55,6 +55,8 @@ class CommandExecutor(Protocol):
 class SandboxedCommandExecutor:
     """Execute shell commands through sandbox-exec or bubblewrap."""
 
+    execution_mode = "sandbox"
+
     SAFE_ENV_KEYS = frozenset(
         {
             "PATH",

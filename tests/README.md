@@ -21,6 +21,7 @@ uv run python -m pytest -q --basetemp=.swe-agent/pytest-temp
 | `test_permission_scopes.py`、`test_permissions.py`、`test_approval_runtime.py` | 精确授权、审批、拒绝与停止 |
 | `test_persistence.py`、`test_context_rewind.py` | 数据迁移、会话恢复与上下文分支 |
 | `test_sandbox.py`、`test_interrupt.py` | 执行边界、环境清洗与中断 |
+| `test_host_execution.py` | 显式 host 启动、每次审批、PowerShell 执行、超时取消和来源展示 |
 | `test_task.py`、`test_background_task.py`、`test_teams.py` | 任务、后台事件、团队与 worktree |
 | 其他 `test_*.py` | Memory、压缩、重试与终端渲染 |
 

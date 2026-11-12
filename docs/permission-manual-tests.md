@@ -2,7 +2,22 @@
 
 运行 `uv run python main.py`。下方提示词输入给助手；确认实际工具、命令和 cwd 与用例一致，助手改写命令时需重测。
 
-Windows 可验证审批界面与拒绝／停止；批准后的 Shell 执行需 Linux + bubblewrap 或 macOS + sandbox-exec。缺少后端时出现 `No supported sandbox backend` 是预期的拒绝执行行为。
+下表主要验证默认 sandbox 模式；Windows 默认没有后端，出现 `No supported sandbox backend` 是预期的拒绝执行行为。需要验证沙箱执行时使用 Linux + bubblewrap 或 macOS + sandbox-exec。
+
+## Windows host 模式验收
+
+运行 `uv run python main.py --execution-mode host`，或在目标目录用项目 Python 和 main.py 的绝对路径启动并加同一参数。
+
+| 操作 | 预期 |
+| --- | --- |
+| `/status` | 显示 host、NO OS SANDBOX、host-powershell |
+| cwd=`.`，`curl.exe --head https://example.com` | 卡片显示真实目录、host.execute、host.network、无隔离；按 y 无需回车，进入 Executing 并显示结果 |
+| 再次执行完全相同命令 | 仍需审批，仅有单次批准选项 |
+| 执行 `Get-Location` | 只读命令也必须审批 |
+| 请求 `Start-Sleep -Seconds 30`，批准后连续按两次 Esc | 第一次提示，第二次停止并返回输入框 |
+| 不加 host 参数重新启动并恢复会话 | 仍为 sandbox，不继承 host 模式或授权 |
+
+host 模式不适用下表中的 a/t 授权复用预期；网络实际可用性仍取决于本机网络。
 
 ## 准备
 
@@ -11,6 +26,8 @@ Windows 可验证审批界面与拒绝／停止；批准后的 Shell 执行需 L
 统一提示格式：
 
 > 使用 run_bash 执行下表命令，cwd 为指定目录，不要改写命令。
+
+交互终端应将问题、选项和输入提示分行显示；Windows／POSIX 均按单键立即响应，不需要回车。先检查按 y 后立刻出现批准结果和 Executing 状态。
 
 ## 验收用例
 

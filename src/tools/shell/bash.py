@@ -17,8 +17,9 @@ class BashArgs(BaseModel):
     network_access: bool = Field(
         default=False,
         description=(
-            "Request sandbox network access. This triggers approval and should "
-            "only be set when the command genuinely needs the network."
+            "Declare that the command needs network access. In sandbox mode this "
+            "requests network approval; host mode always requires once-only approval "
+            "and does not isolate network access."
         ),
     )
     timeout_seconds: int = Field(
@@ -40,6 +41,13 @@ class BashTool(BaseTool[BashArgs]):
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.executor = executor or SandboxedCommandExecutor()
+        if getattr(self.executor, "execution_mode", "sandbox") == "host":
+            shell = "PowerShell" if getattr(self.executor, "windows", False) else "POSIX sh"
+            self.description = (
+                f"Run a command on the host using {shell}, without OS sandbox isolation. "
+                "Every call requires explicit once-only approval. On Windows use curl.exe, "
+                "and PowerShell syntax (Windows PowerShell 5 may not support &&)."
+            )
 
     def run(
         self,
@@ -48,6 +56,10 @@ class BashTool(BaseTool[BashArgs]):
     ) -> dict[str, Any]:
         project_root = (getattr(context, "workspace_root", None) or self.project_root).resolve()
         workdir = (project_root / args.cwd).resolve()
+
+        host = getattr(self.executor, "execution_mode", "sandbox") == "host"
+        if host and "host.execute" not in context.granted_capabilities:
+            return {"ok": False, "error": "Host execution requires explicit approval", "exit_code": -1}
 
         if not workdir.is_relative_to(project_root):
             return {
@@ -75,5 +87,6 @@ class BashTool(BaseTool[BashArgs]):
             "exit_code": result.exit_code,
             "sandboxed": result.sandboxed,
             "sandbox_backend": result.backend,
-            "network_enabled": "sandbox.network" in context.granted_capabilities,
+            "execution_mode": "host" if host else "sandbox",
+            "network_enabled": host or "sandbox.network" in context.granted_capabilities,
         }

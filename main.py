@@ -1,4 +1,5 @@
 import json
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ from src.runtime.agent_runner import AgentRunner
 from src.runtime.approval import ApprovalRuntime, ApprovalRuntimeEvent
 from src.runtime.context_rewind import ContextRewindResult
 from src.runtime.session import Session
+from src.runtime.host_executor import HostCommandExecutor
 from src.teams.controller import TeamController
 from src.tools.base import ToolContext
 from src.tools.toolset import ToolSet
@@ -193,7 +195,15 @@ def confirm_team_plan_continuation(
 
 
 
-def main() -> None:
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Terminal coding agent")
+    parser.add_argument("--execution-mode", choices=("sandbox", "host"), default="sandbox",
+                        help="Shell execution mode; host requires once-only approval and has no OS sandbox")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> None:
+    args = parse_args(argv)
     workdir = Path.cwd().resolve()
     renderer = ConsoleRenderer()
 
@@ -236,6 +246,11 @@ def main() -> None:
         provider_id=provider_profile.id,
     )
     print_welcome(session, workdir, renderer=renderer)
+    if args.execution_mode == "host":
+        renderer.show_notice(
+            "Execution mode: HOST — no OS filesystem or network isolation. "
+            "Every Shell command requires once-only approval."
+        )
     memory_store = MemoryStore(
         workdir,
         client=provider.client,
@@ -264,7 +279,7 @@ def main() -> None:
             f"{result.discarded_messages} messages. Abandoned branch: {transcript}"
         )
 
-    toolset = ToolSet()
+    toolset = ToolSet(command_executor=HostCommandExecutor() if args.execution_mode == "host" else None)
     approval_runtime = ApprovalRuntime()
 
     def show_approval_event(event: ApprovalRuntimeEvent) -> None:
@@ -284,6 +299,7 @@ def main() -> None:
         max_tool_iterations=MAX_TOOL_ITERATIONS,
         renderer=renderer,
         approval_runtime=approval_runtime,
+        execution_mode=args.execution_mode,
     )
 
     team_controller = TeamController(
@@ -297,6 +313,7 @@ def main() -> None:
             max_tool_iterations=MAX_TOOL_ITERATIONS,
             renderer=renderer,
             approval_runtime=approval_runtime,
+            execution_mode=args.execution_mode,
         ),
         model_getter=lambda: session.model,
         worker_count=2,
