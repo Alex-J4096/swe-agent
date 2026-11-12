@@ -1,3 +1,4 @@
+from src.infrastructure.experiment_log import logged_completion, record_event
 import json
 import time
 from dataclasses import dataclass
@@ -228,7 +229,7 @@ def compact_history(
     ]
     try:
         response = request_with_retry(
-            lambda: client.chat.completions.create(
+            lambda: logged_completion(client, component="compact",
                 model=model,
                 messages=summary_messages,
                 max_tokens=1_024,

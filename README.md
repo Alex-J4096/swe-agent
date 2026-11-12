@@ -56,6 +56,7 @@ uv run python main.py --execution-mode host
 | `/memory [on\|off\|status]` | 控制当前会话 Memory |
 | `/team` | 启动、审批、查看或停止团队；[团队操作](docs/TEAMS.md) |
 | `/debug` | 查看格式化历史 |
+| `/experiment [on [path]\|off\|status]` | 开启、关闭或查看实验日志；默认写入 `.swe-agent/experiments/` |
 
 ## 一次任务如何运行
 

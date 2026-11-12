@@ -102,6 +102,7 @@ class SlashCommandCompletionTests(unittest.TestCase):
                 "/clear",
                 "/compact",
                 "/debug",
+                "/experiment",
                 "/model",
                 "/keys",
                 "/memory",

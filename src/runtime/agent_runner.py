@@ -1,3 +1,4 @@
+from src.infrastructure.experiment_log import logged_completion, record_event
 import json
 from copy import deepcopy
 import sys
@@ -377,6 +378,8 @@ class AgentRunner:
                 if tool_name == TODO_STATE_KEY and output.get("ok"):
                     todo_updated = True
 
+                record_event("tool_result", session_id=session.session_id,
+                             tool=tool_name, arguments=arguments_json, output=output)
                 if on_tool_result is not None:
                     on_tool_result(tool_name, output)
 
@@ -580,7 +583,7 @@ class AgentRunner:
         try:
             try:
                 response = run_interruptible(lambda: request_with_retry(
-                    lambda: client.chat.completions.create(
+                    lambda: logged_completion(client, component="agent",
                         model=model,
                         messages=list(messages),
                         tools=[],
@@ -621,7 +624,7 @@ class AgentRunner:
             request_messages = deepcopy(messages)
             request_tools = deepcopy(tools)
             return run_interruptible(lambda: request_with_retry(
-                lambda: client.chat.completions.create(
+                lambda: logged_completion(client, component="agent",
                     model=model,
                     messages=request_messages,
                     tools=request_tools,

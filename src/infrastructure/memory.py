@@ -1,3 +1,4 @@
+from src.infrastructure.experiment_log import logged_completion, record_event
 import json
 import hashlib
 import re
@@ -639,7 +640,7 @@ class MemoryStore:
 
         try:
             response = request_with_retry(
-                lambda: self.client.chat.completions.create(
+                lambda: logged_completion(self.client, component="memory",
                     model=model,
                     messages=[
                         {

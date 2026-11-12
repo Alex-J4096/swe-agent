@@ -1,3 +1,4 @@
+from src.infrastructure.experiment_log import configure_experiment_log, record_event
 import json
 import argparse
 import os
@@ -197,6 +198,7 @@ def confirm_team_plan_continuation(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Terminal coding agent")
+    parser.add_argument("--experiment-log", help="Append experiment events to this JSONL file")
     parser.add_argument("--execution-mode", choices=("sandbox", "host"), default="sandbox",
                         help="Shell execution mode; host requires once-only approval and has no OS sandbox")
     return parser.parse_args(argv)
@@ -204,6 +206,9 @@ def parse_args(argv=None):
 
 def main(argv=None) -> None:
     args = parse_args(argv)
+    if args.experiment_log:
+        configure_experiment_log(Path(args.experiment_log), workdir=str(Path.cwd()),
+                                 execution_mode=args.execution_mode)
     workdir = Path.cwd().resolve()
     renderer = ConsoleRenderer()
 
@@ -421,6 +426,12 @@ def main(argv=None) -> None:
                         selected_files,
                         session_id=session.session_id,
                     )
+                record_event("memory_selection", session_id=session.session_id,
+                             enabled=session.memory_enabled,
+                             local_files=local_files if session.memory_enabled else [],
+                             cached_files=cached_files if session.memory_enabled else [],
+                             selected_files=selected_files if session.memory_enabled else [],
+                             memory_context=memory_context)
                 turn_system_prompt = system_prompt
                 if memory_context:
                     turn_system_prompt = (
