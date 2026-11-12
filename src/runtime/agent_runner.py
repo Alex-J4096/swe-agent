@@ -334,11 +334,17 @@ class AgentRunner:
                         effective_tool_context,
                         granted_capabilities=capabilities,
                     )
-                    output = toolset.dispatch(
-                        tool_name,
-                        arguments_json,
-                        context=dispatch_context,
+                    self.renderer.start_thinking(
+                        f"Executing {tool_name} · Esc/Ctrl+C to stop"
                     )
+                    try:
+                        output = toolset.dispatch(
+                            tool_name,
+                            arguments_json,
+                            context=dispatch_context,
+                        )
+                    finally:
+                        self.renderer.stop_thinking()
                 else:
                     feedback = ""
                     if not hard_denied and response is not None:

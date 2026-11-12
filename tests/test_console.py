@@ -229,3 +229,14 @@ def test_show_welcome_emits_no_ansi_when_color_disabled() -> None:
     rendered = output.getvalue()
     assert "\x1b" not in rendered
     assert "Type /help for available commands." in rendered
+
+
+def test_shell_failure_displays_stderr_when_error_field_is_absent():
+    renderer, output = make_renderer()
+    renderer.show_tool_result("run_bash", {
+        "ok": False,
+        "stderr": "No supported sandbox backend is available; host execution was not attempted",
+        "exit_code": -1,
+    })
+    assert "failed" in output.getvalue()
+    assert "No supported sandbox backend" in output.getvalue()

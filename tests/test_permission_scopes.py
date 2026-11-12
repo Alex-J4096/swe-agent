@@ -152,6 +152,60 @@ def test_runner_dispatches_all_approved_capabilities(tmp_path):
     assert dispatched[0][1] == {"sandbox.network", "workspace.destructive"}
 
 
+@pytest.mark.parametrize("ok", [True, False])
+def test_approval_transitions_to_tool_animation_then_back_to_model(tmp_path, ok):
+    runner, toolset, _ = runner_fixture(tmp_path, [[call("network", "curl https://example.com")]])
+    events = []
+    runner.renderer = SimpleNamespace(
+        start_thinking=lambda message: events.append(message),
+        stop_thinking=lambda: events.append("stopped"),
+    )
+
+    def approve(*args):
+        assert events[-1] == "stopped"  # No animation over the approval prompt.
+        events.append("approved")
+        return True
+
+    def dispatch(*args, **kwargs):
+        assert events[-1].startswith("Executing run_bash")
+        events.append("dispatch")
+        return {"ok": ok, "stderr": "test failure" if not ok else ""}
+
+    def show_result(*args):
+        assert events[-1] == "stopped"  # Clear animation before printing output.
+        events.append("result")
+
+    toolset.dispatch = dispatch
+    result = runner.run(Session(model="test"), toolset, "system",
+                        confirm_permission=approve, on_tool_result=show_result)
+    assert result.content == "done"
+    assert events == [
+        "Thinking · Esc/Ctrl+C to stop", "stopped", "approved",
+        "Executing run_bash · Esc/Ctrl+C to stop", "dispatch", "stopped", "result",
+        "Thinking · Esc/Ctrl+C to stop", "stopped",
+    ]
+
+
+def test_tool_animation_is_cleared_on_interruption(tmp_path):
+    from src.utils.interrupt import TurnInterrupted
+
+    runner, toolset, _ = runner_fixture(tmp_path, [[call("network", "curl https://example.com")]])
+    events = []
+    runner.renderer = SimpleNamespace(
+        start_thinking=lambda message: events.append(message),
+        stop_thinking=lambda: events.append("stopped"),
+    )
+
+    def dispatch(*args, **kwargs):
+        assert events[-1].startswith("Executing run_bash")
+        raise TurnInterrupted()
+
+    toolset.dispatch = dispatch
+    with pytest.raises(TurnInterrupted):
+        runner.run(Session(model="test"), toolset, "system", confirm_permission=lambda *_: True)
+    assert events[-1] == "stopped"
+
+
 def test_rejection_limit_stops_loop_without_reprompting(tmp_path, monkeypatch):
     runner, toolset, dispatched = runner_fixture(tmp_path, [[call(str(i), "rm marker")] for i in range(3)])
     monkeypatch.setattr(runner, "_request_permission_summary", lambda **_: "Stopped after repeated rejections")

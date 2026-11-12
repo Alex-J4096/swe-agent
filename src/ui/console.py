@@ -324,8 +324,9 @@ class ConsoleRenderer:
             self.show_team_plan(output.get("plan"))
             return
 
-        if not ok and output.get("error"):
-            err_text = self._safe(output["error"])
+        error = output.get("error") or output.get("stderr")
+        if not ok and error:
+            err_text = self._safe(error)
             self._write(
                 f"       {self._paint(ICON_ERROR, self.theme.error)} "
                 f"{self._paint(err_text, self.theme.error)}"
