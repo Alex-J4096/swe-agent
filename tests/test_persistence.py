@@ -162,7 +162,7 @@ def test_database_persists_credentials_and_selects_active_default(
     database.close()
 
 
-def test_session_round_trip_preserves_messages_and_runtime_state(
+def test_session_round_trip_preserves_state_but_discards_permission_grants(
     tmp_path: Path,
 ) -> None:
     database, store = make_store(tmp_path)
@@ -210,8 +210,8 @@ def test_session_round_trip_preserves_messages_and_runtime_state(
     assert loaded.provider_id == "provider-1"
     assert loaded.history == session.history
     assert loaded.tool_state == session.tool_state
-    assert loaded.approved_command_prefixes == {("git", "status")}
-    assert loaded.approved_permission_scopes == {"sandbox.network:abc123"}
+    assert loaded.approved_command_prefixes == set()
+    assert loaded.approved_permission_scopes == set()
     assert loaded.memory_enabled is False
     assert loaded.context_checkpoints == session.context_checkpoints
     assert loaded.context_branch_id == session.context_branch_id
@@ -294,7 +294,8 @@ def test_status_command_reports_current_session_metadata(tmp_path: Path) -> None
 
     assert result.message is not None
     assert "Model:       model-a" in result.message
-    assert f"Directory:   {tmp_path}" in result.message
+    from src.utils.welcome import format_workdir
+    assert f"Directory:   {format_workdir(tmp_path)}" in result.message
     assert "Thread name: Investigate auth" in result.message
     assert f"Session UID: {current.session_id}" in result.message
     assert f"Context:     {current.context_branch_id}" in result.message

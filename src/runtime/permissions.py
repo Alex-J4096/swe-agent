@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from src.runtime.session import Session
-from src.utils.shell import shell_tokens
+from src.utils.shell import is_readonly_command, shell_tokens
 
 
 PermissionOutcome = Literal["allow", "require_approval", "deny"]
@@ -24,6 +23,12 @@ class PermissionDecision:
     risk: str = "low"
     capability: str | None = None
     scope_key: str | None = None
+    capabilities: frozenset[str] = frozenset()
+    reusable: bool = True
+
+    @property
+    def required_capabilities(self) -> frozenset[str]:
+        return self.capabilities or frozenset({self.capability} if self.capability else ())
 
 
 class PermissionPolicy:
@@ -136,39 +141,58 @@ class PermissionPolicy:
         return False
 
     @staticmethod
-    def _legacy_approved(session: Session | None, command: str) -> bool:
-        if session is None:
+    def _reusable(command: str) -> bool:
+        # Shell source is executable code. Opaque syntax and interpreter entry
+        # points always need a fresh decision, rather than a reusable grant.
+        if any(marker in command for marker in ("$", "`", "\n", "\r", ">", "<", "{", "}")):
             return False
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
+        segments = PermissionPolicy._segments(command)
+        opaque = {
+            "bash", "sh", "zsh", "fish", "python", "python3", "node",
+            "ruby", "perl", "powershell", "pwsh", "cmd", "eval", "exec",
+            "source", ".", "env", "command", "nohup", "xargs",
+        }
+        if not segments:
             return False
-        prefix = tuple(tokens[:2]) if len(tokens) > 1 else tuple(tokens)
-        return bool(prefix) and prefix in session.approved_command_prefixes
+        for segment in segments:
+            program, args = PermissionPolicy._program(segment)
+            program = program.removesuffix(".exe")
+            if program in opaque or program.startswith("python"):
+                return False
+            if Path(program).suffix in {".py", ".sh", ".ps1", ".js", ".bat", ".cmd"}:
+                return False
+            if program in {"uv", "npm", "pnpm", "yarn", "bun", "npx"} and (
+                program == "npx" or any(action in args[:3] for action in {"run", "exec", "x"})
+            ):
+                return False
+            if program == "find" and any(flag in args for flag in {"-exec", "-execdir", "-delete", "-ok", "-okdir"}):
+                return False
+        return True
 
     @staticmethod
     def _scope_key(capability: str, command: str, cwd: str) -> str:
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            tokens = [command]
-        # Preserve the executable/action shape without granting every invocation
-        # of broad launchers such as `uv run` or `python -m`.
-        if len(tokens) >= 3 and tokens[:2] in (["uv", "run"], ["python", "-m"], ["python3", "-m"]):
-            family = tokens[:3]
-        elif len(tokens) >= 3 and tokens[0] in {"npm", "pnpm", "yarn", "bun"}:
-            family = tokens[:3]
-        else:
-            family = tokens[:2]
+        # Preserve full shell source, including quoting and every command segment.
+        # Only the directory is canonicalized; source whitespace can be meaningful.
         payload = json.dumps(
-            {"capability": capability, "family": family, "cwd": cwd},
+            {"version": 2, "capability": capability, "command": command, "cwd": cwd},
             ensure_ascii=False,
             sort_keys=True,
         )
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-        label = quote(" ".join(family), safe="-._")
+        label = quote(command, safe="-._")
         location = quote(cwd, safe="-._/")
-        return f"{capability}:{digest}:{label}@{location}"
+        return f"v2:{quote(capability, safe='-._+')}:{digest}:{label}@{location}"
+
+    @staticmethod
+    def describe_scope(scope: str) -> str:
+        if not scope.startswith("v2:"):
+            return "Legacy grant (no longer used; revoke it)"
+        try:
+            _, capability, _digest, target = scope.split(":", 3)
+            command, location = target.rsplit("@", 1)
+            return f"{unquote(capability)} | {unquote(command)} | cwd={unquote(location)}"
+        except ValueError:
+            return "Unrecognized grant (no longer used)"
 
     def evaluate(
         self,
@@ -197,51 +221,35 @@ class PermissionPolicy:
             if not target.is_relative_to(self.workdir):
                 return PermissionDecision("deny", "cwd escapes workspace", "critical")
 
+            capabilities: set[str] = set()
+            reasons: list[str] = []
             if args.get("network_access") is True or self._requires_network(command):
-                capability = "sandbox.network"
-                scope_key = self._scope_key(capability, command, cwd)
-                if session is not None and (
-                    scope_key in session.approved_permission_scopes
-                    or self._legacy_approved(session, command)
-                ):
-                    return PermissionDecision(
-                        "allow",
-                        "Session-approved sandbox network access",
-                        "medium",
-                        capability,
-                        scope_key,
-                    )
-                return PermissionDecision(
-                    "require_approval",
-                    "Command requires sandbox network access",
-                    "medium",
-                    capability,
-                    scope_key,
-                )
-
+                capabilities.add("sandbox.network")
+                reasons.append("Command requires sandbox network access")
             if self._is_destructive(command):
-                capability = "workspace.destructive"
-                scope_key = self._scope_key(capability, command, cwd)
-                if session is not None and (
-                    scope_key in session.approved_permission_scopes
-                    or self._legacy_approved(session, command)
-                ):
-                    return PermissionDecision(
-                        "allow",
-                        "Session-approved destructive workspace command",
-                        "high",
-                        capability,
-                        scope_key,
-                    )
-                return PermissionDecision(
-                    "require_approval",
-                    "Command may destructively modify the workspace",
-                    "high",
-                    capability,
-                    scope_key,
-                )
-
-            return PermissionDecision("allow", "Confined to the shell sandbox")
+                capabilities.add("workspace.destructive")
+                reasons.append("Command may destructively modify the workspace")
+            reusable = self._reusable(command)
+            if not reusable and not is_readonly_command(command):
+                capabilities.add("shell.opaque")
+                reasons.append("Shell source cannot be safely classified; approval is once only")
+            if not capabilities:
+                return PermissionDecision("allow", "Confined to the shell sandbox")
+            authority = "+".join(sorted(capabilities))
+            scope_key = self._scope_key(authority, command, str(target))
+            approved = (
+                reusable and session is not None
+                and scope_key in session.approved_permission_scopes
+            )
+            return PermissionDecision(
+                "allow" if approved else "require_approval",
+                "; ".join(reasons),
+                "high" if capabilities - {"sandbox.network"} else "medium",
+                next(iter(capabilities)) if len(capabilities) == 1 else None,
+                scope_key,
+                frozenset(capabilities),
+                reusable,
+            )
 
         if tool_name in {"read_file", "write_file", "edit_file"}:
             file_path = args.get("file_path")
@@ -253,21 +261,14 @@ class PermissionPolicy:
             return PermissionDecision("allow")
 
         if tool_name not in self.BUILTIN_TOOLS:
-            scope_key = f"tool:{tool_name}"
-            if session is not None and scope_key in session.approved_permission_scopes:
-                return PermissionDecision(
-                    "allow",
-                    "Session-approved extension tool",
-                    "medium",
-                    f"tool.{tool_name}",
-                    scope_key,
-                )
+            capability = f"tool.{tool_name}"
+            source = json.dumps(args, ensure_ascii=False, sort_keys=True)
+            scope_key = self._scope_key(capability, source, str(self.workdir))
+            approved = session is not None and scope_key in session.approved_permission_scopes
             return PermissionDecision(
-                "require_approval",
+                "allow" if approved else "require_approval",
                 "Extension tool has no built-in permission classification",
-                "medium",
-                f"tool.{tool_name}",
-                scope_key,
+                "medium", capability, scope_key,
             )
 
         return PermissionDecision("allow")

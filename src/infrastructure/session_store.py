@@ -49,8 +49,10 @@ class SessionStore:
         title: str | None = None,
         workdir: Path | None = None,
     ) -> None:
-        approved_prefixes = [list(prefix) for prefix in session.approved_command_prefixes]
-        approved_scopes = sorted(session.approved_permission_scopes)
+        # Grants are runtime authority, not conversation history. Never persist
+        # them or resurrect legacy approvals when a conversation is resumed.
+        approved_prefixes: list[list[str]] = []
+        approved_scopes: list[str] = []
         context_state = {
             "checkpoints": session.context_checkpoints,
             "branch_id": session.context_branch_id,
@@ -171,11 +173,6 @@ class SessionStore:
         context_state: dict[str, Any] = {}
         if state is not None:
             tool_state = json.loads(state["tool_state_json"])
-            approved_prefixes = {
-                tuple(prefix)
-                for prefix in json.loads(state["approved_prefixes_json"])
-            }
-            approved_scopes = set(json.loads(state["approved_scopes_json"]))
             loaded_context_state = json.loads(state["context_state_json"])
             if isinstance(loaded_context_state, dict):
                 context_state = loaded_context_state

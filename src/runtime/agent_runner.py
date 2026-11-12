@@ -57,6 +57,7 @@ class AgentRunResult:
 class AgentRunner:
     MAX_TRUNCATION_CONTINUATIONS = 3
     TRUNCATION_MAX_TOKENS_MULTIPLIER = 8
+    MAX_PERMISSION_REJECTIONS = 3
 
     def __init__(
         self,
@@ -120,6 +121,8 @@ class AgentRunner:
         )
         iterations_since_todo_update = 0
         turn_approved_scopes: set[str] = set()
+        rejected_operations: set[str] = set()
+        rejection_count = 0
 
         for iteration in range(self.max_tool_iterations):
             if before_model_request is not None:
@@ -216,7 +219,7 @@ class AgentRunner:
                 tool_call.function.name == "rewind_context"
                 for tool_call in assistant_message.tool_calls
             )
-            for tool_call in assistant_message.tool_calls:
+            for call_index, tool_call in enumerate(assistant_message.tool_calls):
                 response: ApprovalResponse | None = None
                 tool_name = tool_call.function.name
                 arguments_json = tool_call.function.arguments
@@ -259,8 +262,21 @@ class AgentRunner:
                     permission_args,
                     session=session,
                 )
+                operation_key = permission.scope_key or json.dumps(
+                    [tool_name, permission_args], ensure_ascii=False, sort_keys=True
+                )
+                if operation_key in rejected_operations:
+                    permission = replace(
+                        permission,
+                        outcome="deny",
+                        reason=(
+                            "This operation was already rejected. Choose a "
+                            "permitted alternative; do not bypass the rejection."
+                        ),
+                    )
                 if (
                     permission.scope_key
+                    and permission.reusable
                     and permission.scope_key in turn_approved_scopes
                     and permission.outcome == "require_approval"
                 ):
@@ -291,15 +307,24 @@ class AgentRunner:
                         confirm_permission=confirm_permission,
                     )
                     allowed = response.approved
-                    if response.decision == "approve_turn" and permission.scope_key:
+                    if response.decision == "stop":
+                        self._permission_interrupted = True
+                    if (
+                        response.decision == "approve_turn"
+                        and permission.scope_key
+                        and permission.reusable
+                    ):
                         turn_approved_scopes.add(permission.scope_key)
-                    if response.decision == "approve_session" and permission.scope_key:
+                    if (
+                        response.decision == "approve_session"
+                        and permission.scope_key
+                        and permission.reusable
+                    ):
                         session.approved_permission_scopes.add(permission.scope_key)
 
                 if allowed:
                     capabilities = effective_tool_context.granted_capabilities
-                    if permission.capability:
-                        capabilities = capabilities.union({permission.capability})
+                    capabilities = capabilities.union(permission.required_capabilities)
                     dispatch_context = replace(
                         effective_tool_context,
                         granted_capabilities=capabilities,
@@ -315,11 +340,20 @@ class AgentRunner:
                         feedback = response.feedback.strip()
                     output = {
                         "ok": False,
+                        "permission_denied": True,
+                        "retry_allowed": False,
+                        "guidance": (
+                            "Continue with a permitted alternative. Do not repeat "
+                            "this operation or bypass the restriction using "
+                            "another tool or command spelling."
+                        ),
                         "error": (
                             f"Permission denied: {permission_reason}"
                             + (f". User feedback: {feedback}" if feedback else "")
                         ),
                     }
+                    rejected_operations.add(operation_key)
+                    rejection_count += 1
                 if tool_name == TODO_STATE_KEY and output.get("ok"):
                     todo_updated = True
 
@@ -334,6 +368,23 @@ class AgentRunner:
                     }
                 )
 
+                if not allowed:
+                    # Resolve every outstanding call before the next model
+                    # request or resume. Replan before executing the rest of a
+                    # batch whose assumptions may depend on the rejected call.
+                    for skipped in assistant_message.tool_calls[call_index + 1:]:
+                        skipped_output = {
+                            "ok": False,
+                            "error": "Skipped after permission rejection; replan using permitted alternatives.",
+                        }
+                        session.history.append({
+                            "role": "tool",
+                            "tool_call_id": skipped.id,
+                            "content": json.dumps(skipped_output),
+                        })
+                        if on_tool_result is not None:
+                            on_tool_result(skipped.function.name, skipped_output)
+
                 if self._permission_interrupted:
                     session.pending_context_rewind = None
                     self._compact_after_round(session)
@@ -342,6 +393,8 @@ class AgentRunner:
                         content=None,
                         stopped_by_permission=True,
                     )
+                if not allowed and rejection_count < self.MAX_PERMISSION_REJECTIONS:
+                    break
 
                 if stop_after_tool is not None and stop_after_tool(tool_name, output):
                     should_continue = (
@@ -354,7 +407,7 @@ class AgentRunner:
                         self._compact_after_round(session)
                         return AgentRunResult(ok=True, content=None)
 
-                if hard_denied or not allowed:
+                if not allowed and rejection_count >= self.MAX_PERMISSION_REJECTIONS:
                     session.pending_context_rewind = None
                     summary = self._request_permission_summary(
                         session=session,
@@ -663,12 +716,27 @@ class AgentRunner:
         self,
         request: ApprovalRequestRecord,
     ) -> ApprovalResponse:
-        question = self.renderer.permission_question(request.tool_name)
-        answer, raw_tty = read_confirmation(question)
-        if raw_tty:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        elif sys.stdin.isatty() and sys.stdout.isatty():
+        self.renderer.permission_request(request)
+        question = self.renderer.permission_question(
+            request.tool_name, reusable=request.reusable
+        )
+        valid_answers = {ESCAPE, "y", "yes", "1", "n", "no", "3", "s", "stop"}
+        if request.reusable:
+            valid_answers.update({"t", "turn", "a", "session", "2"})
+        while True:
+            answer, raw_tty = read_confirmation(question)
+            if raw_tty:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            if answer in valid_answers:
+                break
+            self.renderer.show_notice(
+                "Choose y/n/s" + (
+                    " or t/a for this exact operation." if request.reusable
+                    else "; this operation supports once only."
+                )
+            )
+        if not raw_tty and sys.stdin.isatty() and sys.stdout.isatty():
             self.renderer.clear_input_line()
 
         if answer == ESCAPE:
@@ -676,16 +744,19 @@ class AgentRunner:
             self.renderer.show_notice(
                 "Permission prompt interrupted. Returning to the user prompt."
             )
-            return ApprovalResponse("reject", "User interrupted the approval prompt")
+            return ApprovalResponse("stop", "User interrupted the approval prompt")
 
         decisions = {
             "y": "approve_once",
             "yes": "approve_once",
+            "1": "approve_once",
             "t": "approve_turn",
             "turn": "approve_turn",
             "a": "approve_session",
-            "allow": "approve_session",
-            "always": "approve_session",
+            "session": "approve_session",
+            "2": "approve_session",
+            "s": "stop",
+            "stop": "stop",
         }
         decision = decisions.get(answer, "reject")
         response = ApprovalResponse(decision)  # type: ignore[arg-type]
@@ -694,6 +765,7 @@ class AgentRunner:
             "approve_turn": "turn",
             "approve_session": "session",
             "reject": "once",
+            "stop": "task",
         }[response.decision]
         self._print_permission_decision(
             request.tool_name,
@@ -740,6 +812,13 @@ class AgentRunner:
             scope_key=permission.scope_key,
             capability=permission.capability,
             source=source,
+            capabilities=tuple(sorted(permission.required_capabilities)),
+            cwd=(
+                str((self.workdir / args.get("cwd", ".")).resolve())
+                if tool_name == "run_bash" else str(self.workdir)
+            ),
+            reusable=permission.reusable,
+            risk=permission.risk,
         )
         if context.approval_interactive:
             try:

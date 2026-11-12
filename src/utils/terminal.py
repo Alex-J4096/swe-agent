@@ -29,7 +29,10 @@ def _read_confirmation(question: str) -> Tuple[str, bool]:
         import termios
         import tty
     except ImportError:  # pragma: no cover
-        return input(question).strip().lower(), False
+        try:
+            return input(question).strip().lower(), False
+        except (EOFError, KeyboardInterrupt):
+            return ESCAPE, False
 
     sys.stdout.write(question)
     sys.stdout.flush()
@@ -44,7 +47,7 @@ def _read_confirmation(question: str) -> Tuple[str, bool]:
             if value in {ESCAPE, "\x03", "\x04"}:
                 return ESCAPE, True
             answer = value.lower()
-            if answer in {"y", "a", "n", "c"}:
+            if answer in {"y", "t", "a", "n", "s", "c", "1", "2", "3"}:
                 return answer, True
     finally:
         termios.tcsetattr(file_descriptor, termios.TCSADRAIN, previous)

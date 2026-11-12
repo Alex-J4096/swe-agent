@@ -10,7 +10,7 @@ from typing import Literal
 from uuid import uuid4
 
 
-ApprovalDecision = Literal["approve_once", "approve_turn", "approve_session", "reject"]
+ApprovalDecision = Literal["approve_once", "approve_turn", "approve_session", "reject", "stop"]
 ApprovalStatus = Literal["pending", "resolved", "cancelled"]
 
 
@@ -30,7 +30,7 @@ class ApprovalResponse:
 
     @property
     def approved(self) -> bool:
-        return self.decision != "reject"
+        return self.decision in {"approve_once", "approve_turn", "approve_session"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,10 @@ class ApprovalRequestRecord:
     scope_key: str | None
     capability: str | None
     source: ApprovalSource
+    capabilities: tuple[str, ...] = ()
+    cwd: str = ""
+    reusable: bool = True
+    risk: str = "medium"
     status: ApprovalStatus = "pending"
     response: ApprovalResponse | None = None
     created_at: float = 0.0
@@ -112,6 +116,10 @@ class ApprovalRuntime:
         scope_key: str | None,
         capability: str | None,
         source: ApprovalSource,
+        capabilities: tuple[str, ...] = (),
+        cwd: str = "",
+        reusable: bool = True,
+        risk: str = "medium",
     ) -> ApprovalRequestRecord:
         record = ApprovalRequestRecord(
             id=f"approval_{uuid4().hex}",
@@ -123,6 +131,10 @@ class ApprovalRuntime:
             scope_key=scope_key,
             capability=capability,
             source=source,
+            capabilities=capabilities,
+            cwd=cwd,
+            reusable=reusable,
+            risk=risk,
             created_at=time(),
         )
         with self._condition:
@@ -149,6 +161,8 @@ class ApprovalRuntime:
             current = self._records.get(request_id)
             if current is None or current.status != "pending":
                 return False
+            if not current.reusable and response.decision in {"approve_turn", "approve_session"}:
+                return False
             resolved = replace(
                 current,
                 status="resolved",
@@ -172,7 +186,7 @@ class ApprovalRuntime:
             cancelled = replace(
                 current,
                 status="cancelled",
-                response=ApprovalResponse("reject", reason),
+                response=ApprovalResponse("stop", reason),
                 resolved_at=time(),
             )
             self._records[request_id] = cancelled

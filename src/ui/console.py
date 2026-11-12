@@ -16,7 +16,10 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
+
+if TYPE_CHECKING:
+    from src.runtime.approval import ApprovalRequestRecord
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI
@@ -522,10 +525,29 @@ class ConsoleRenderer:
 
     # ── Permissions ──────────────────────────────────────────────────────
 
-    def permission_question(self, tool_name: str) -> str:
+    def permission_request(self, request: ApprovalRequestRecord) -> None:
+        self._write("\n  Approval required")
+        capabilities = request.capabilities or ((request.capability,) if request.capability else ())
+        for label, value in (
+            ("Source", request.source.agent_id or request.source.kind),
+            ("Task", request.source.task_id or "foreground"),
+            ("Tool", request.tool_name),
+            ("Command / arguments", request.preview),
+            ("Directory", request.cwd or "."),
+            ("Reason", request.reason),
+            ("Risk", request.risk),
+            ("Required permissions", ", ".join(capabilities)),
+            ("Reuse", "Exact operation + directory + permissions; until session is unloaded" if request.reusable else "Once only; no reusable grant"),
+        ):
+            self._write(f"    {label}: {self._safe(value)}")
+        if request.tool_name == "run_bash":
+            self._write("    Execution: filesystem sandbox remains enforced.")
+
+    def permission_question(self, tool_name: str, *, reusable: bool = True) -> str:
         question = (
             f"  {ICON_WARN} Allow {tool_name}? "
-            "[y] once / [t] turn / [a] session / [n] deny "
+            + ("[y/1] once / [t] turn / [a/2] session (exact operation) / " if reusable else "[y/1] once / ")
+            + "[n/3] deny and adjust / [s/Esc] stop task "
         )
         return self._paint(question, self.theme.warning)
 

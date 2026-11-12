@@ -42,7 +42,7 @@ def test_deny_list_reads_command_from_parsed_arguments(tmp_path: Path) -> None:
     assert hard_denied is True
 
 
-def test_non_denied_bash_command_requires_permission(tmp_path: Path) -> None:
+def test_readonly_bash_command_does_not_require_approval(tmp_path: Path) -> None:
     runner = make_runner(tmp_path)
 
     reason, hard_denied = runner._check_permission(
@@ -91,7 +91,7 @@ def test_explicit_network_request_requires_capability_approval(tmp_path: Path) -
         session=Session(model="test-model"),
     )
 
-    assert reason == "Command requires sandbox network access"
+    assert reason.startswith("Command requires sandbox network access")
     assert hard_denied is False
 
 
@@ -140,7 +140,7 @@ def test_readonly_shell_compositions_are_auto_allowed(tmp_path: Path) -> None:
         assert hard_denied is False
 
 
-def test_legacy_session_prefix_is_honored_for_restored_sessions(
+def test_legacy_session_prefix_cannot_grant_authority(
     tmp_path: Path,
 ) -> None:
     runner = make_runner(tmp_path)
@@ -154,7 +154,7 @@ def test_legacy_session_prefix_is_honored_for_restored_sessions(
         session=session,
     )
 
-    assert reason is None
+    assert reason == "Command requires sandbox network access"
     assert hard_denied is False
 
 
@@ -212,7 +212,7 @@ def test_escape_interrupts_permission_prompt(
     assert "Returning to the user prompt" in capsys.readouterr().out
 
 
-def test_user_denial_stops_tools_and_uses_tool_free_summary(
+def test_user_denial_returns_to_model_for_alternative(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -276,14 +276,14 @@ def test_user_denial_stops_tools_and_uses_tool_free_summary(
     result = runner.run(session, toolset, "system")
 
     assert result.ok is True
-    assert result.stopped_by_permission is True
+    assert result.stopped_by_permission is False
     assert result.content == "操作已拒绝，未继续执行其他工具。"
     assert dispatch_count == 0
     assert len(requests) == 2
     assert requests[0]["tools"] == []
     assert requests[0]["tool_choice"] == "auto"
     assert requests[1]["tools"] == []
-    assert requests[1]["tool_choice"] == "none"
+    assert requests[1]["tool_choice"] == "auto"
     assert session.history[-1] == {
         "role": "assistant",
         "content": "操作已拒绝，未继续执行其他工具。",
@@ -472,7 +472,7 @@ def test_turn_approval_reuses_same_scoped_capability(
                 arguments=json.dumps({"command": f"git push origin {branch}"}),
             ),
         )
-        for branch in ("main", "release")
+        for branch in ("main", "main")
     ]
     responses = [
         SimpleNamespace(
