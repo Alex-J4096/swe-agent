@@ -2,7 +2,10 @@ import json
 import subprocess
 import threading
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+
+import pytest
 
 from src.runtime.session import Session
 from src.teams.controller import TeamController
@@ -20,6 +23,16 @@ from src.utils.slash_commands.commands.team import TeamCommand
 
 def make_runtime(tmp_path: Path) -> TeamRuntime:
     return TeamRuntime(tmp_path, "team-test")
+
+
+@pytest.fixture
+def worktree_root():
+    # Git's Windows path limits can be exceeded by pytest's sandbox temp root.
+    # Keep actual Git integration coverage using a short, isolated local path.
+    base = Path(__file__).resolve().parents[1] / ".swe-agent" / "test-worktrees"
+    base.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="wt-", dir=base) as directory:
+        yield Path(directory)
 
 
 def test_message_bus_delivery_is_acknowledgeable_and_idempotent(tmp_path: Path) -> None:
@@ -203,7 +216,8 @@ def test_expired_task_claim_is_requeued(tmp_path: Path) -> None:
     assert retry.owner == "worker-b"
 
 
-def test_worktree_manager_creates_and_reuses_task_worktree(tmp_path: Path) -> None:
+def test_worktree_manager_creates_and_reuses_task_worktree(worktree_root: Path) -> None:
+    tmp_path = worktree_root
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
@@ -224,7 +238,8 @@ def test_worktree_manager_creates_and_reuses_task_worktree(tmp_path: Path) -> No
     assert created != repo
 
 
-def test_runtime_binds_worktree_to_claimed_task(tmp_path: Path) -> None:
+def test_runtime_binds_worktree_to_claimed_task(worktree_root: Path) -> None:
+    tmp_path = worktree_root
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
