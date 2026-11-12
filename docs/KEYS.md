@@ -13,7 +13,7 @@ flowchart LR
 
 ## 命令速查
 
-`provider` 接受服务商 ID 或名称，省略时使用当前服务商。密钥 ID 从 `/keys list` 复制。
+`provider` 接受服务商 ID 或名称，省略时弹出服务商菜单，用 ↑↓ 选择、Enter 确认、Esc 取消；菜单默认选中当前服务商。密钥 ID 从 `/keys list` 复制。
 
 | 命令 | 行为 |
 | --- | --- |
@@ -21,7 +21,7 @@ flowchart LR
 | `/keys add [provider]` | 命名、隐藏输入、验证，选择是否设为默认 |
 | `/keys use <key-id>` | 验证后设为默认；当前服务商的客户端同步更新 |
 | `/keys use env [provider]` | 验证环境变量后取消数据库默认项，保留已保存密钥 |
-| `/keys test [key-id]` | 验证指定密钥；无 ID 时验证当前实际使用项，不切换配置 |
+| `/keys test [key-id]` | 验证指定密钥；无 ID 时先选择服务商，再验证其实际使用项，不切换配置 |
 | `/keys remove <key-id>` | 确认后删除本地记录；当前项／默认项先选择并验证替代来源 |
 | `/keys source [provider]` | 对比当前客户端来源与下次创建客户端的来源 |
 | `/keys reset [provider]` | 验证并替换默认密钥，保留所选模型 |

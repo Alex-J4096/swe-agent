@@ -21,7 +21,8 @@ class KeysCommand(BaseCommand):
     HELP = (
         "/keys list [provider]\n/keys add [provider]\n/keys use <key-id>\n"
         "/keys use env [provider]\n/keys test [key-id]\n/keys remove <key-id>\n"
-        "/keys source [provider]\n/keys reset [provider]"
+        "/keys source [provider]\n/keys reset [provider]\n"
+        "Omit provider to choose from a menu: ↑↓ Select · Enter Confirm · Esc Cancel."
     )
 
     def execute(self, args: list[str], context: CommandContext) -> CommandResult:
@@ -46,9 +47,20 @@ class KeysCommand(BaseCommand):
                 if action == "test" and provider_args:
                     return CommandResult(self.HELP)
                 profile = self._profile(provider_args, context)
+                if not provider_args:
+                    providers = context.database.list_providers()
+                    if providers:
+                        selected = select_menu(
+                            "Select provider",
+                            [p.name for p in providers],
+                            profile.name if profile else None,
+                        )
+                        if selected is None:
+                            return CommandResult("API key operation cancelled.")
+                        profile = next((p for p in providers if p.name == selected), None)
                 credential = None
             if profile is None:
-                return CommandResult("Choose a configured provider, e.g. /keys list siliconflow.\n" + self.HELP)
+                return CommandResult("No matching provider available. Use /keys list to choose a configured provider.\n" + self.HELP)
             if action == "list":
                 return self._list(profile, context, service)
             if action == "source":

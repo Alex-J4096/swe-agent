@@ -60,7 +60,7 @@ def test_reset_key_bypasses_saved_and_environment_credentials(monkeypatch):
         patch("src.utils.slash_commands.commands.keys.Provider", return_value=candidate) as provider,
         patch("src.utils.slash_commands.commands.keys.prompt", side_effect=["replacement-test-key"]) as prompt,
     ):
-        result = KeysCommand().execute(["reset"], ctx)
+        result = KeysCommand().execute(["reset", "siliconflow"], ctx)
     assert "API key updated for SiliconFlow" in result.message
     assert ctx.session.model == "old-model"
     assert provider.call_args.kwargs["api_key"] == "replacement-test-key"
@@ -76,7 +76,7 @@ def test_failed_replacement_does_not_overwrite_saved_key():
         patch("src.utils.slash_commands.commands.keys.Provider", return_value=candidate),
         patch("src.utils.slash_commands.commands.keys.prompt", side_effect=["bad-replacement"]),
     ):
-        result = KeysCommand().execute(["reset"], ctx)
+        result = KeysCommand().execute(["reset", "siliconflow"], ctx)
     assert "HTTP 401" in result.message
     ctx.database.upsert_credential.assert_not_called()
 
@@ -143,7 +143,7 @@ def test_keys_reset_other_provider_does_not_switch_live_client():
 def test_keys_cancel_leaves_existing_configuration_untouched(answer):
     ctx = context()
     with patch("src.utils.slash_commands.commands.keys.prompt", side_effect=[answer]):
-        result = KeysCommand().execute(["reset"], ctx)
+        result = KeysCommand().execute(["reset", "siliconflow"], ctx)
     assert "cancelled" in result.message
     ctx.database.upsert_credential.assert_not_called()
     ctx.provider.update_from.assert_not_called()
@@ -151,7 +151,7 @@ def test_keys_cancel_leaves_existing_configuration_untouched(answer):
 
 def test_keys_registered_in_slash_dispatch():
     from src.utils.slash_commands.factory import create_command_registry
-    result = create_command_registry().dispatch("/keys", context())
+    result = create_command_registry().dispatch("/keys list siliconflow", context())
     assert "API keys" in result.message
     assert "/keys add" in result.message
 

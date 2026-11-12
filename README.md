@@ -14,7 +14,7 @@ uv run python main.py
 在程序中配置密钥、选择模型，再输入任务：
 
 ```text
-/keys add siliconflow
+/keys add
 /model
 请分析当前项目，并告诉我如何运行测试
 ```

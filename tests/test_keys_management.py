@@ -57,7 +57,7 @@ def state(monkeypatch):
     database.close()
 
 
-def run(state, args, answers=(), selected=None):
+def run(state, args, answers=(), selected="SiliconFlow"):
     with (
         patch("src.utils.slash_commands.commands.keys.prompt", side_effect=list(answers)) as prompt,
         patch("src.utils.slash_commands.commands.keys.select_menu", return_value=selected),
@@ -259,7 +259,7 @@ def test_remove_last_key_disables_live_requests(state):
 def test_reset_replaces_selected_default_not_another_named_key(state):
     second(state)
     state.db.set_default_credential("b")
-    run(state, ["reset"], ["secret-replacement"])
+    run(state, ["reset"], ["secret-replacement"], selected="SiliconFlow")
     assert state.db.get_credential("b").access_token == "secret-replacement"
     assert state.db.get_credential("a").access_token == "secret-first"
     assert len(state.db.list_credentials("sf")) == 2
@@ -346,3 +346,70 @@ def test_source_reports_changed_environment_without_exposing_either_token(state,
     text, _ = run(state, ["source"])
     assert "differs from current environment" in text
     assert "secret-env-old" not in text and "secret-env-new" not in text
+
+
+def test_reset_selects_provider_before_requesting_key(state):
+    with (
+        patch("src.utils.slash_commands.commands.keys.select_menu", return_value="Other Provider") as menu,
+        patch("src.utils.slash_commands.commands.keys.prompt", return_value="secret-other") as prompt,
+    ):
+        def select_provider(*args):
+            prompt.assert_not_called()
+            return "Other Provider"
+
+        menu.side_effect = select_provider
+        result = KeysCommand().execute(["reset"], state.ctx)
+    menu.assert_called_once_with("Select provider", ["Other Provider", "SiliconFlow"], "SiliconFlow")
+    prompt.assert_called_once_with("Enter API key for Other Provider: ", is_password=True)
+    assert "updated for Other Provider" in result.message
+    assert state.db.get_default_credential("other").access_token == "secret-other"
+    assert state.db.get_credential("a").access_token == "secret-first"
+    assert state.ctx.session.provider_id == "sf"
+    state.ctx.on_provider_changed.assert_not_called()
+
+
+def test_cancel_reset_provider_selection_does_not_prompt_or_mutate(state):
+    text, prompt = run(state, ["reset"], selected=None)
+    assert "cancelled" in text
+    prompt.assert_not_called()
+    assert FakeProvider.calls == []
+    assert state.db.get_credential("a").access_token == "secret-first"
+    assert state.db.list_credentials("other") == []
+
+
+def test_reset_with_explicit_provider_skips_selection(state):
+    with patch("src.utils.slash_commands.commands.keys.select_menu") as menu:
+        with patch("src.utils.slash_commands.commands.keys.prompt", return_value="secret-other"):
+            result = KeysCommand().execute(["reset", "other"], state.ctx)
+    menu.assert_not_called()
+    assert "updated for Other Provider" in result.message
+
+
+@pytest.mark.parametrize("args", [[], ["list"], ["add"], ["source"], ["reset"], ["use", "env"], ["test"]])
+def test_provider_menu_cancel_stops_all_provider_operations(state, args):
+    text, prompt = run(state, args, selected=None)
+    assert "cancelled" in text
+    prompt.assert_not_called()
+    assert FakeProvider.calls == []
+    assert state.db.get_credential("a").access_token == "secret-first"
+
+
+@pytest.mark.parametrize("args,expected", [(["list"], "API keys — Other Provider"), (["source"], "Provider: Other Provider")])
+def test_provider_menu_reads_selected_provider(state, args, expected):
+    text, _ = run(state, args, selected="Other Provider")
+    assert expected in text
+
+
+def test_add_provider_menu_saves_to_selected_provider(state):
+    text, _ = run(state, ["add"], ["work", "secret-other", "n"], selected="Other Provider")
+    assert "added for Other Provider" in text
+    assert state.db.list_credentials("other")[0].access_token == "secret-other"
+    assert state.ctx.session.provider_id == "sf"
+
+
+def test_environment_provider_menu_uses_selected_provider(state, monkeypatch):
+    monkeypatch.setenv(state.other.api_key_env, "secret-env")
+    text, _ = run(state, ["use", "env"], selected="Other Provider")
+    assert "selected for Other Provider" in text
+    assert FakeProvider.calls == ["secret-env"]
+    assert state.ctx.provider.api_key == "secret-first"
