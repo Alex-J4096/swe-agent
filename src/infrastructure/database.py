@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -192,6 +192,17 @@ class AppDatabase:
                 "TEXT NOT NULL DEFAULT '{}'"
             )
             self.connection.execute("PRAGMA user_version = 5")
+        if current_version < 6:
+            self.connection.execute("""
+                CREATE TABLE credential_checks (
+                    credential_id TEXT PRIMARY KEY REFERENCES provider_credentials(id) ON DELETE CASCADE,
+                    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT NOT NULL,
+                    http_status INTEGER,
+                    provider_code TEXT
+                )
+            """)
+            self.connection.execute("PRAGMA user_version = 6")
         self.connection.commit()
 
     @contextmanager
@@ -291,6 +302,11 @@ class AppDatabase:
     def upsert_credential(self, credential: ProviderCredential) -> None:
         scopes_json = json.dumps(credential.scopes, ensure_ascii=False, sort_keys=True)
         with self.transaction() as connection:
+            previous = connection.execute(
+                "SELECT access_token FROM provider_credentials WHERE id = ?", (credential.id,),
+            ).fetchone()
+            if previous is not None and previous[0] != credential.access_token:
+                connection.execute("DELETE FROM credential_checks WHERE credential_id = ?", (credential.id,))
             if credential.is_default:
                 connection.execute(
                     "UPDATE provider_credentials SET is_default = 0 WHERE provider_id = ?",
@@ -337,7 +353,7 @@ class AppDatabase:
             SELECT id, provider_id, name, credential_type, access_token,
                    refresh_token, expires_at, scopes_json, is_default, is_active
             FROM provider_credentials
-            WHERE provider_id = ? AND is_active = 1
+            WHERE provider_id = ? AND is_active = 1 AND is_default = 1
             ORDER BY is_default DESC, updated_at DESC
             LIMIT 1
             """,
@@ -357,3 +373,69 @@ class AppDatabase:
             is_default=bool(row["is_default"]),
             is_active=bool(row["is_active"]),
         )
+
+    @staticmethod
+    def _credential_from_row(row) -> ProviderCredential:
+        return ProviderCredential(
+            id=row["id"], provider_id=row["provider_id"], name=row["name"],
+            access_token=row["access_token"], credential_type=row["credential_type"],
+            refresh_token=row["refresh_token"], expires_at=row["expires_at"],
+            scopes=json.loads(row["scopes_json"]),
+            is_default=bool(row["is_default"]), is_active=bool(row["is_active"]),
+        )
+
+    def list_credentials(self, provider_id: str) -> list[ProviderCredential]:
+        rows = self.connection.execute(
+            "SELECT * FROM provider_credentials WHERE provider_id = ? ORDER BY name COLLATE NOCASE, id",
+            (provider_id,),
+        ).fetchall()
+        return [self._credential_from_row(row) for row in rows]
+
+    def get_credential(self, credential_id: str) -> ProviderCredential | None:
+        row = self.connection.execute(
+            "SELECT * FROM provider_credentials WHERE id = ?", (credential_id,),
+        ).fetchone()
+        return self._credential_from_row(row) if row else None
+
+    def set_default_credential(self, credential_id: str) -> None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT provider_id FROM provider_credentials WHERE id = ? AND is_active = 1",
+                (credential_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Active API key not found.")
+            connection.execute("UPDATE provider_credentials SET is_default = 0 WHERE provider_id = ?", (row[0],))
+            connection.execute("UPDATE provider_credentials SET is_default = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (credential_id,))
+
+    def remove_credential(self, credential_id: str, replacement_id: str | None = None, *, clear_default: bool = False) -> None:
+        with self.transaction() as connection:
+            row = connection.execute("SELECT provider_id FROM provider_credentials WHERE id = ?", (credential_id,)).fetchone()
+            if row is None:
+                raise ValueError("API key not found.")
+            if clear_default:
+                connection.execute("UPDATE provider_credentials SET is_default = 0 WHERE provider_id = ?", (row[0],))
+            if replacement_id is not None:
+                replacement = connection.execute(
+                    "SELECT id FROM provider_credentials WHERE id = ? AND provider_id = ? AND is_active = 1 AND id != ?",
+                    (replacement_id, row[0], credential_id),
+                ).fetchone()
+                if replacement is None:
+                    raise ValueError("Replacement must be another active key from the same provider.")
+                connection.execute("UPDATE provider_credentials SET is_default = 0 WHERE provider_id = ?", (row[0],))
+                connection.execute("UPDATE provider_credentials SET is_default = 1 WHERE id = ?", (replacement_id,))
+            connection.execute("DELETE FROM provider_credentials WHERE id = ?", (credential_id,))
+
+    def record_credential_check(self, credential_id: str, status: str, http_status: int | None = None, provider_code: str | None = None) -> None:
+        with self.transaction() as connection:
+            connection.execute("""
+                INSERT INTO credential_checks (credential_id, status, http_status, provider_code)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(credential_id) DO UPDATE SET
+                    status = excluded.status, http_status = excluded.http_status,
+                    provider_code = excluded.provider_code, checked_at = CURRENT_TIMESTAMP
+            """, (credential_id, status, http_status, provider_code))
+
+    def get_credential_check(self, credential_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT * FROM credential_checks WHERE credential_id = ?", (credential_id,)).fetchone()
+        return dict(row) if row else None

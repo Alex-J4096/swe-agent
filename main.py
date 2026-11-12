@@ -12,7 +12,6 @@ from src.infrastructure.memory_selection_cache import MemorySelectionCache
 from src.infrastructure.database import (
     AppDatabase,
     ModelProfile,
-    ProviderCredential,
     ProviderProfile,
     default_database_path,
 )
@@ -20,6 +19,7 @@ from src.infrastructure.session_store import SessionStore
 from src.runtime.subagent_service import SubagentService
 from src.runtime.memory_worker import MemoryWorker
 from src.runtime.memory_selection_worker import MemorySelectionWorker
+from src.infrastructure.credential_service import CredentialService
 from src.infrastructure.model_provider import Provider
 from src.prompts import SYSTEM
 from src.runtime.agent_runner import AgentRunner
@@ -192,49 +192,6 @@ def confirm_team_plan_continuation(
     return should_continue
 
 
-def load_or_prompt_credential(
-    database: AppDatabase,
-    profile: ProviderProfile,
-) -> ProviderCredential | None:
-    """Load a stored/env key, or ask for one without echoing it."""
-    credential = database.get_default_credential(profile.id)
-    if credential is not None:
-        return credential
-
-    environment_token = os.getenv(profile.api_key_env or "")
-    if environment_token:
-        database.upsert_credential(
-            ProviderCredential(
-                id=f"{profile.id}-default",
-                provider_id=profile.id,
-                name="default",
-                access_token=environment_token,
-                is_default=True,
-            )
-        )
-        return database.get_default_credential(profile.id)
-
-    try:
-        token = prompt(
-            f"Enter API key for {profile.name}: ",
-            is_password=True,
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        return None
-    if not token:
-        return None
-
-    database.upsert_credential(
-        ProviderCredential(
-            id=f"{profile.id}-default",
-            provider_id=profile.id,
-            name="default",
-            access_token=token,
-            is_default=True,
-        )
-    )
-    return database.get_default_credential(profile.id)
-
 
 def main() -> None:
     workdir = Path.cwd().resolve()
@@ -259,19 +216,20 @@ def main() -> None:
         database.close()
         return
 
-    credential = load_or_prompt_credential(database, provider_profile)
+    resolution = CredentialService(database).resolve(provider_profile)
 
-    if credential is None:
+    if resolution.token is None:
         renderer.show_notice(
             f"No API key configured for {provider_profile.name}. "
-            "Use /model to configure a provider before sending a request."
+            "Use /keys add or /keys reset before sending a request."
         )
 
     provider = Provider(
         provider_name=provider_profile.name,
-        api_key=credential.access_token if credential is not None else None,
+        api_key=resolution.token,
         base_url=provider_profile.base_url,
     )
+    CredentialService.stamp(provider, resolution)
     session_store = SessionStore(database)
     session = Session(
         model=model_profile.model_id,

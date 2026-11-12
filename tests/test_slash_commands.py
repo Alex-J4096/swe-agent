@@ -59,8 +59,14 @@ class HelpCommandTests(unittest.TestCase):
             "/compact",
             "/debug",
             "/model",
+            "/keys",
             "/memory",
+            "/permissions",
+            "/sessions",
             "/status",
+            "/team",
+            "/resume",
+            "/new",
         ):
             self.assertIn(usage, help_text)
 
@@ -97,6 +103,7 @@ class SlashCommandCompletionTests(unittest.TestCase):
                 "/compact",
                 "/debug",
                 "/model",
+                "/keys",
                 "/memory",
                 "/permissions",
                 "/approvals",
@@ -179,13 +186,13 @@ class ModelCommandTests(unittest.TestCase):
         )
         return database
 
-    def test_selects_provider_then_prompts_for_key_then_model(self):
+    def test_selects_provider_using_environment_key_without_saving_it(self):
         with TemporaryDirectory() as directory:
-            self._test_selects_provider_then_prompts_for_key_then_model(
+            self._test_selects_provider_using_environment_key_without_saving_it(
                 Path(directory)
             )
 
-    def _test_selects_provider_then_prompts_for_key_then_model(
+    def _test_selects_provider_using_environment_key_without_saving_it(
         self,
         tmp_path: Path,
     ):
@@ -217,9 +224,10 @@ class ModelCommandTests(unittest.TestCase):
                 "src.utils.slash_commands.commands.model.Provider",
                 return_value=candidate,
             ),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "openai-secret"}),
             patch(
-                "src.utils.slash_commands.commands.model.prompt",
-                side_effect=["OpenAI", "openai-secret", "gpt-test"],
+                "src.utils.slash_commands.commands.model.select_menu",
+                side_effect=["OpenAI", "gpt-test"],
             ),
         ):
             result = ModelCommand().execute([], context)
@@ -229,8 +237,7 @@ class ModelCommandTests(unittest.TestCase):
         self.assertEqual(session.provider_id, "openai")
         self.assertEqual(session.model, "gpt-test")
         credential = database.get_default_credential("openai")
-        self.assertIsNotNone(credential)
-        self.assertEqual(credential.access_token, "openai-secret")
+        self.assertIsNone(credential)
         self.assertEqual(database.get_default_credential("siliconflow"), None)
         database.close()
 
@@ -273,7 +280,7 @@ class ModelCommandTests(unittest.TestCase):
                 return_value=candidate,
             ),
             patch(
-                "src.utils.slash_commands.commands.model.prompt",
+                "src.utils.slash_commands.commands.model.select_menu",
                 side_effect=["OpenAI", "gpt-test"],
             ) as prompt_mock,
         ):

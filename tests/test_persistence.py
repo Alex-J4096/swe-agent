@@ -59,7 +59,7 @@ def test_database_v3_migrates_permission_scopes(tmp_path: Path) -> None:
 
     assert "approved_scopes_json" in columns
     assert "context_state_json" in columns
-    assert database.connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert database.connection.execute("PRAGMA user_version").fetchone()[0] == 6
     database.close()
 
 
@@ -88,7 +88,7 @@ def test_database_v4_migrates_context_state(tmp_path: Path) -> None:
     }
 
     assert "context_state_json" in columns
-    assert database.connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert database.connection.execute("PRAGMA user_version").fetchone()[0] == 6
     database.close()
 
 

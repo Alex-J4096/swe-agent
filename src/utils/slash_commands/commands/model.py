@@ -1,9 +1,9 @@
 from openai import OpenAIError
-from prompt_toolkit import prompt
-from prompt_toolkit.completion import FuzzyWordCompleter
 
-from src.infrastructure.database import ProviderCredential, ProviderProfile
-from src.infrastructure.model_provider import Provider
+from src.infrastructure.database import ProviderProfile
+from src.infrastructure.credential_service import CredentialService
+from src.infrastructure.model_provider import Provider, model_load_error
+from src.ui.selection_menu import select_menu
 from src.utils.slash_commands.base import BaseCommand, CommandContext, CommandResult
 
 
@@ -15,7 +15,7 @@ class ModelCommand(BaseCommand):
 
     def execute(self, args: list[str], context: CommandContext) -> CommandResult:
         if args:
-            return CommandResult("Usage: /model")
+            return CommandResult(f"Usage: {self.usage}")
 
         if context.database is None:
             return CommandResult("Provider configuration is not available.")
@@ -37,20 +37,25 @@ class ModelCommand(BaseCommand):
             for provider in providers
             if provider.name == selected_provider_name
         )
-        api_key = self._get_api_key(selected_provider, context)
+        resolution = CredentialService(context.database).resolve(selected_provider)
+        api_key = resolution.token
         if api_key is None:
-            return CommandResult("Model switch cancelled.")
+            return CommandResult(
+                f"No API key configured for {selected_provider.name}. "
+                f"Run /keys reset {selected_provider.id}, then /model."
+            )
 
         candidate = Provider(
             provider_name=selected_provider.name,
             api_key=api_key,
             base_url=selected_provider.base_url,
         )
+        CredentialService.stamp(candidate, resolution)
         try:
             model_ids = candidate.list_model_ids()
-        except OpenAIError:
+        except OpenAIError as exc:
             return CommandResult(
-                f"Failed to load models from {selected_provider.name}."
+                model_load_error(selected_provider.name, exc)
             )
 
         if not model_ids:
@@ -75,15 +80,6 @@ class ModelCommand(BaseCommand):
         if context.on_provider_changed is not None:
             context.on_provider_changed(context.provider)
 
-        context.database.upsert_credential(
-            ProviderCredential(
-                id=f"{selected_provider.id}-default",
-                provider_id=selected_provider.id,
-                name="default",
-                access_token=api_key,
-                is_default=True,
-            )
-        )
         context.session.provider_id = selected_provider.id
         context.session.model = selected
         if context.session_store is not None:
@@ -113,60 +109,7 @@ class ModelCommand(BaseCommand):
         current_provider: str | None,
     ) -> str | None:
         provider_names = [provider.name for provider in providers]
-        completer = FuzzyWordCompleter(provider_names, WORD=True)
-        prompt_hint = current_provider or provider_names[0]
-        try:
-            selected = prompt(
-                f"Select provider [{prompt_hint}]: ",
-                completer=completer,
-                complete_while_typing=True,
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if not selected or selected not in provider_names:
-            return None
-        return selected
-
-    @staticmethod
-    def _get_api_key(
-        provider: ProviderProfile,
-        context: CommandContext,
-    ) -> str | None:
-        credential = context.database.get_default_credential(provider.id)
-        if credential is not None:
-            return credential.access_token
-
-        import os
-
-        environment_token = os.getenv(provider.api_key_env or "")
-        if environment_token:
-            return environment_token
-
-        try:
-            api_key = prompt(
-                f"Enter API key for {provider.name}: ",
-                is_password=True,
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        return api_key or None
+        return select_menu("Select provider", provider_names, current_provider)
 
     def _select_model(self, model_ids: list[str], current_model: str) -> str | None:
-        completer = FuzzyWordCompleter(model_ids, WORD=True)
-
-        try:
-            selected = prompt(
-                f"Select model [{current_model}]: ",
-                completer=completer,
-                complete_while_typing=True,
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-
-        if not selected:
-            return None
-
-        if selected not in model_ids:
-            return None
-
-        return selected
+        return select_menu("Select model", model_ids, current_model)
