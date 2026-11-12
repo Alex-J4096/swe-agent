@@ -108,6 +108,7 @@ class ThinkingIndicator:
         self._message_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._start_time: float | None = None
+        self.stop_confirmation = threading.Event()
 
     def start(self, message: str = "Thinking") -> None:
         """Start the animation if output is an interactive terminal."""
@@ -142,6 +143,8 @@ class ThinkingIndicator:
             color = self.GRADIENT[idx % len(self.GRADIENT)]
             with self._message_lock:
                 message = self._message
+            if self.stop_confirmation.is_set():
+                message = "Press Esc again to stop · Ctrl+C stops immediately"
 
             elapsed = ""
             if self._start_time is not None:
@@ -196,6 +199,14 @@ class ConsoleRenderer:
 
     def stop_thinking(self) -> None:
         self.thinking.stop()
+
+    def show_stop_hint(self) -> None:
+        self.thinking.stop_confirmation.set()
+        if not self.thinking.is_running:
+            self.show_notice("Press Esc again to stop this turn; Ctrl+C stops immediately.")
+
+    def clear_stop_hint(self) -> None:
+        self.thinking.stop_confirmation.clear()
 
     def _safe(self, value: object) -> str:
         """Keep model/tool text from injecting terminal control sequences."""

@@ -1,11 +1,11 @@
 import random
-import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 
 from openai import OpenAIError
+from src.utils.interrupt import check_interrupted, interruptible_sleep
 
 
 RETRYABLE_STATUS_CODES = frozenset({429, 529})
@@ -18,6 +18,7 @@ BACKOFF_JITTER_RATIO = 0.1
 def request_with_retry(request: Callable[[], Any]) -> Any:
     """Run a model request, retrying only rate-limit and overload errors."""
     for retry_index in range(MAX_RETRIES + 1):
+        check_interrupted()
         try:
             return request()
         except OpenAIError as exc:
@@ -35,7 +36,7 @@ def request_with_retry(request: Callable[[], Any]) -> Any:
             else:
                 delay = min(MAX_BACKOFF_SECONDS, delay)
 
-            time.sleep(delay)
+            interruptible_sleep(delay)
 
     raise AssertionError("unreachable")
 

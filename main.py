@@ -369,10 +369,11 @@ def main() -> None:
             continue
 
         try:
-            with interruptible_turn():
+            renderer.clear_stop_hint()
+            with interruptible_turn(on_stop_requested=renderer.show_stop_hint):
                 # Start before session/prompt/memory preparation so slow local work is
                 # also visible immediately after the user submits the prompt.
-                renderer.start_thinking("Preparing")
+                renderer.start_thinking("Preparing · Esc/Ctrl+C to stop")
                 session.history.append({"role": "user", "content": query})
                 save_session_if_needed(session_store, session, workdir)
                 system_prompt = build_system_prompt(

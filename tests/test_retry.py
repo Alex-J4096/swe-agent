@@ -27,7 +27,7 @@ class RequestRetryTests(unittest.TestCase):
                 raise response
             return response
 
-        with patch("src.infrastructure.retry.time.sleep") as sleep:
+        with patch("src.infrastructure.retry.interruptible_sleep") as sleep:
             result = request_with_retry(request)
 
         self.assertEqual(result, "ok")
@@ -48,7 +48,7 @@ class RequestRetryTests(unittest.TestCase):
             return response
 
         with (
-            patch("src.infrastructure.retry.time.sleep") as sleep,
+            patch("src.infrastructure.retry.interruptible_sleep") as sleep,
             patch("src.infrastructure.retry.random.uniform", return_value=0),
         ):
             result = request_with_retry(request)
@@ -66,7 +66,7 @@ class RequestRetryTests(unittest.TestCase):
             raise error
 
         with (
-            patch("src.infrastructure.retry.time.sleep") as sleep,
+            patch("src.infrastructure.retry.interruptible_sleep") as sleep,
             self.assertRaises(StatusError),
         ):
             request_with_retry(request)
@@ -82,7 +82,7 @@ class RequestRetryTests(unittest.TestCase):
             raise StatusError(429)
 
         with (
-            patch("src.infrastructure.retry.time.sleep"),
+            patch("src.infrastructure.retry.interruptible_sleep"),
             patch("src.infrastructure.retry.random.uniform", return_value=0),
             self.assertRaises(StatusError),
         ):

@@ -1,5 +1,6 @@
 from io import StringIO
 import time
+from threading import Event
 
 from src.ui.console import ConsoleRenderer, format_tool_preview
 
@@ -24,6 +25,32 @@ def test_thinking_indicator_is_disabled_for_non_tty_output() -> None:
     renderer.stop_thinking()
 
     assert output.getvalue() == ""
+
+
+def test_stop_confirmation_hint_is_rendered_and_can_be_reset():
+    shown = Event()
+
+    class FakeTTY(StringIO):
+        def isatty(self):
+            return True
+
+        def write(self, text):
+            result = super().write(text)
+            if "Press Esc again" in text:
+                shown.set()
+            return result
+
+    output = FakeTTY()
+    renderer = ConsoleRenderer(output=output, use_color=False)
+    renderer.start_thinking()
+    try:
+        renderer.show_stop_hint()
+        assert shown.wait(1)
+        assert renderer.thinking.is_running  # First Esc only asks for confirmation.
+        renderer.clear_stop_hint()
+        assert not renderer.thinking.stop_confirmation.is_set()
+    finally:
+        renderer.stop_thinking()
 
 
 def test_thinking_indicator_clears_its_line_when_stopped() -> None:

@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -36,6 +37,7 @@ from src.tools.todo_manager.todo_manager import (
 from src.tools.toolset import ToolSet
 from src.ui.console import ConsoleRenderer
 from src.utils.terminal import ESCAPE, read_confirmation
+from src.utils.interrupt import check_interrupted, run_interruptible
 
 
 CONTINUATION_PROMPT = (
@@ -125,6 +127,7 @@ class AgentRunner:
         rejection_count = 0
 
         for iteration in range(self.max_tool_iterations):
+            check_interrupted()
             if before_model_request is not None:
                 before_model_request(session)
             self._inject_background_events(session, toolset)
@@ -161,7 +164,7 @@ class AgentRunner:
                         f"{effective_system_prompt}\n\n{rewind_prompt}"
                     )
 
-            self.renderer.start_thinking()
+            self.renderer.start_thinking("Thinking · Esc/Ctrl+C to stop")
             try:
                 try:
                     response, recovered_content = (
@@ -220,6 +223,7 @@ class AgentRunner:
                 for tool_call in assistant_message.tool_calls
             )
             for call_index, tool_call in enumerate(assistant_message.tool_calls):
+                check_interrupted()
                 response: ApprovalResponse | None = None
                 tool_name = tool_call.function.name
                 arguments_json = tool_call.function.arguments
@@ -323,6 +327,7 @@ class AgentRunner:
                         session.approved_permission_scopes.add(permission.scope_key)
 
                 if allowed:
+                    check_interrupted()
                     capabilities = effective_tool_context.granted_capabilities
                     capabilities = capabilities.union(permission.required_capabilities)
                     dispatch_context = replace(
@@ -553,18 +558,21 @@ class AgentRunner:
             },
             *session.history,
         ]
-        self.renderer.start_thinking("Preparing response")
+        self.renderer.start_thinking("Preparing response · Esc/Ctrl+C to stop")
+        client = self.provider.client
+        model = session.model
+        messages = deepcopy(messages)
         try:
             try:
-                response = request_with_retry(
-                    lambda: self.provider.client.chat.completions.create(
-                        model=session.model,
+                response = run_interruptible(lambda: request_with_retry(
+                    lambda: client.chat.completions.create(
+                        model=model,
                         messages=list(messages),
                         tools=[],
                         tool_choice="none",
                         max_tokens=self.max_tokens,
                     )
-                )
+                ))
             except OpenAIError:
                 return fallback
         finally:
@@ -593,15 +601,19 @@ class AgentRunner:
         ]
 
         def request(messages: list[dict[str, Any]], max_tokens: int) -> Any:
-            return request_with_retry(
-                lambda: self.provider.client.chat.completions.create(
-                    model=session.model,
-                    messages=list(messages),
-                    tools=tools,
+            client = self.provider.client
+            model = session.model
+            request_messages = deepcopy(messages)
+            request_tools = deepcopy(tools)
+            return run_interruptible(lambda: request_with_retry(
+                lambda: client.chat.completions.create(
+                    model=model,
+                    messages=request_messages,
+                    tools=request_tools,
                     tool_choice="auto",
                     max_tokens=max_tokens,
                 )
-            )
+            ))
 
         response = request(base_messages, self.max_tokens)
         if not self._response_was_truncated(response):
