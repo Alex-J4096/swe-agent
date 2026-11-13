@@ -188,6 +188,46 @@ def test_c1_turn_uses_real_runner_and_preserves_original_role_history(tmp_path, 
     assert not (directory / "after/.swe-agent/memory").exists()
 
 
+@pytest.mark.parametrize("execute", [True, False], ids=["actual-execution", "source-only-claim"])
+def test_c1_observation_explicitly_requests_execution_and_only_accepts_actual_run(tmp_path, local_executor, execute):
+    repo, directory = tmp_path / "repo", tmp_path / "observation"
+    state = oracle.branch_sources(learned_sources(), "changed")
+    write_project(repo, state)
+    MemoryStore(repo).write_memory_file("loader", "project", "Old loader", "Use settings.toml.")
+    instruction = transfer.prompt("c1", "observe")
+    requests = []
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        # Check the delivered instruction as well as the resulting tool evidence.
+        delivered = kwargs["messages"][1]["content"]
+        assert "实际执行 `python3 service.py`" in delivered
+        assert not any(answer in delivered for answer in (fixture.OLD, fixture.NEW, "30"))
+        if len(requests) == 1:
+            name, arguments = "read_file", {"file_path": "service.py"}
+        elif execute and len(requests) == 2:
+            name, arguments = "run_bash", {"command": "python3 service.py"}
+        else:
+            # The same numeric claim must fail without a real execution receipt.
+            message = {"content": "Current timeout is 30."}
+            return ChatCompletion(id=str(len(requests)), created=1, model="test", object="chat.completion",
+                                  choices=[{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", **message}}])
+        message = {"role": "assistant", "content": "", "tool_calls": [{
+            "id": f"observation-{len(requests)}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+        return ChatCompletion(id=str(len(requests)), created=1, model="test", object="chat.completion",
+                              choices=[{"index": 0, "finish_reason": "tool_calls", "message": message}])
+
+    provider = SimpleNamespace(client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    run = transfer.turn(directory, repo, local_executor, provider, "c1", "changed", instruction,
+                        memory=True, maintain=False)
+    assert transfer.evidence_sequence(run, 'with_name("app.toml")', "service.py")
+    assert oracle.verified_runtime(run, repo, 30) is execute
+    assert project_files(repo) == state and run["first_state"] is None
+    assert MemoryStore(repo).read_memory_file("loader") == MemoryStore(directory / "after").read_memory_file("loader")
+    assert not any(e["event"] == "memory_maintenance_started" for e in run["events"])
+
+
 def test_default_batch_dispatches_twenty_four_cells_after_shared_preparation(tmp_path, monkeypatch):
     lab = tmp_path / "batch"
     calls = []
@@ -218,6 +258,6 @@ def test_default_batch_dispatches_twenty_four_cells_after_shared_preparation(tmp
     for task in ("c1", "a1", "t1"):
         assert sum(row["task"] == task for row in rows) == 8
     manifest = json.loads((lab / "manifest.json").read_text())
-    assert manifest["protocol"] == "transfer-four-arm-v2"
+    assert manifest["protocol"] == "transfer-four-arm-v3"
     assert manifest["conditions"] == ["none", "full", "default", "revise"]
     assert len(manifest["order"]) == 24

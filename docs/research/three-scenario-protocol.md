@@ -1,6 +1,16 @@
 # C1、A1、T1 统一四组实验协议
 
-2026 年 11 月 13 日，C1 已接入 `experiments.transfer_run`，协议标识为 `transfer-four-arm-v2`。这一步统一实验流程和记录方式，尚未运行新的真实模型行为批次。
+2026 年 11 月 13 日，C1 已接入 `experiments.transfer_run`。首轮使用 `transfer-four-arm-v2`，实际执行 A1/T1 的 16 个后续任务，C1 的八个因观察前置要求未满足而跳过，见 [首轮结果](three-scenario-01-results.md)。当前修复版标识为 `transfer-four-arm-v3`，尚未运行真实模型批次；下面说明其与 v2 的区别及共用流程。
+
+## v3：明确 C1 观察的执行要求
+
+统一驱动中的 C1 观察指令现为：
+
+> 请读取服务启动代码，说明启动时实际加载哪个配置文件。请实际执行 `python3 service.py`，根据执行输出报告当前生效的超时值和命令退出状态。不要修改任何文件。
+
+这条指令不给出正确配置文件名或期望数值，两个现场使用同一条指令。源码需进入后续模型请求、实际执行必须成功且输出 30、任务文件不变等验收门槛继续保留。只声称超时为 30，没有实际执行回执，仍判为前置未通过。
+
+修改限定于统一驱动的指令生成；旧 `experiments.c1.fixture.OBSERVE` 和历史 C1 驱动保持原样。v2 的八个缺失单元仍保留跳过状态，后续补齐使用新版本、新 LAB 和新的学习／观察轨迹，不回填原批次。
 
 ## 研究比较与规模
 
@@ -46,13 +56,13 @@ C1 批准既有 `service.py` 的直接 Python 调用、常用隔离参数及工�
 从仓库根目录执行，LAB 必须是新目录：
 
 ```bash
-uv run python -m experiments.transfer_run .swe-agent/experiments/three-scenario-01 --seed 1134
+uv run python -m experiments.transfer_run .swe-agent/experiments/three-scenario-v3-01 --seed 1134
 ```
 
 默认选择 C1、A1、T1。只执行 C1 的八个后续单元时：
 
 ```bash
-uv run python -m experiments.transfer_run .swe-agent/experiments/c1-transfer-01 --tasks c1 --seed 1134
+uv run python -m experiments.transfer_run .swe-agent/experiments/c1-transfer-v3-01 --tasks c1 --seed 1134
 ```
 
 开始正式批次前，提交并固定包含当前驱动的版本及提示、预算和评分规则。运行保存 manifest（协议、Git 提交、平台、Python、模型、预算、提示和顺序）、源码压缩包及 SHA-256、各阶段 JSONL、原角色历史、维护输入、前后快照、独立判分、共享成本和失败记录。数据库、评测源码和实验记录位于任务沙箱之外。
@@ -61,6 +71,6 @@ uv run python -m experiments.transfer_run .swe-agent/experiments/c1-transfer-01 
 
 ## 本地验证边界
 
-当前实验相关测试共 85 项通过，其中新增 7 项验证 C1 评分、真实验证命令、共享准备、四组隔离、真实 AgentRunner 的原角色导入，以及主入口实际调度 24 个单元。调度测试使用模拟模型和模拟隔离结果；它不证明真实模型会完成任务。
+当前实验相关测试共 87 项通过。C1 相关回归包括评分、真实验证命令、共享准备、四组隔离、真实 AgentRunner 的原角色导入，以及主入口实际调度 24 个单元。v3 新增两个确定性分支，验证指令实际送达、既有服务命令确实执行时验收通过，以及仅从源码推断并声称数值时验收仍不通过。模型响应使用模拟数据，命令在临时工程真实执行；调度测试另使用模拟隔离结果。这些检查不证明真实模型一定遵循修复后的指令。
 
-macOS 实际 sandbox-exec 预检另完成 14 项控制（两个现场各六项、学习阶段两项）和外部文件隔离，模型调用为 0。本机证据在 `.swe-agent/experiments/c1-four-arm-protocol-01/`，含控制结果、验证摘要、源码哈希及预检脚本。Linux 尚未对本次统一驱动完成端到端验证。下一轮真实模型的行为、成本和成功率仍待测量。
+v2 的 macOS 实际 sandbox-exec 预检另完成 14 项控制（两个现场各六项、学习阶段两项）和外部文件隔离，模型调用为 0。本机证据在 `.swe-agent/experiments/c1-four-arm-protocol-01/`，含控制结果、验证摘要、当时源码哈希及预检脚本。Linux 尚未对统一驱动完成端到端验证。真实模型结果与缺失单元另见上述首轮报告。
