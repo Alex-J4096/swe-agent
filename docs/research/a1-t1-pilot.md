@@ -1,5 +1,7 @@
 # A1/T1 四组链路试跑
 
+本文保留历史试跑协议。当前 C1/A1/T1 共用入口与 24 单元定义见 [统一四组协议](three-scenario-protocol.md)。
+
 本次用于验收新任务上的真实模型运行链路，每任务只有一份学习历史，每个条件只做一次后续任务。它是试跑，不用于估计总体成功率。项目和评分器见 [环境手册](a1-t1-environments.md)。
 
 现已完成 16 个后续任务，完整结果、前置失败、空库和证据分类问题见 [试跑结果报告](a1-t1-pilot-results.md)。正式批次尚未启动。
@@ -35,7 +37,7 @@ T1 只对官方 Python 脚本直接运行授予执行确认；A1 在 pilot-04 �
 从当前 worktree 根目录执行，输出目录必须不存在：
 
 ```bash
-/Users/alex4096/dev/swe-agent/.venv/bin/python -m experiments.transfer_run .swe-agent/experiments/a1-t1-pilot-01
+/Users/alex4096/dev/swe-agent/.venv/bin/python -m experiments.transfer_run .swe-agent/experiments/a1-t1-pilot-01 --tasks a1 t1
 ```
 
 数据目录包含完整源码快照、每任务的学习和观察对话、维护输入、两类维护后的记忆、逐条件新会话、T1 执行记录、A1 首改快照、独立评分及失败记录。本文件记录运行约定；真实结果另存，不把环境控制成功数当作模型效果。

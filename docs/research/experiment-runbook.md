@@ -1,5 +1,7 @@
 # 编程智能体记忆实验操作手册
 
+当前 C1、A1、T1 的新批次使用 [统一四组协议](three-scenario-protocol.md) 与 `experiments.transfer_run`，每轮 24 次后续任务。下文第 3、4 节保留早期三组 C1 的复现步骤，不作为新四组批次入口。
+
 在 Linux 或 macOS 上打开 Bash，从本项目根目录开始。第一天的目标是拿到两份能检查的材料：一道论文样题的证据链，以及一次“项目改版后修改超时”的完整操作记录。跑通后再扩大样本。[研究计划与六对任务](agent-memory-updates.md)
 
 ## 1. 建立实验目录
@@ -45,7 +47,7 @@ git ls-files | grep -Ei 'longcontext|fact_sh|fact_mh|6k'
 
 正式复现使用作者 README 的 Quick Setup 和 long-context 入口。按检出版本的脚本找到实际调用的 Python 入口，把 agent 配置限定为表 5 的 GPT-4o，数据配置限定为 6K 的两个任务，再执行该条命令。先各跑一题，核对发送的上下文、提示、模型标识和输出，再跑所选任务的全部问题。保存配置、数据修订号、逐题预测、参考答案和官方 `substring_exact_match` 分数。表 5 的参考值为单跳 92%、多跳 28%；使用替代模型时另列模型与结果。作者 README 的 Bash 路径可能随提交变化，以刚才列出的实际文件为准。[作者运行说明](https://github.com/HUST-AI-HYZ/MemoryAgentBench) · [论文表 5](https://arxiv.org/html/2507.05257v4)
 
-## 3. 在本机验证 C1，再运行真实模型
+## 3. 复现早期三组 C1：本机验证与真实模型
 
 从第 1 节的 Bash 终端执行。驱动使用本项目 Python 3.13、内置 SiliconFlow 默认模型和 CLI 相同的凭据解析顺序（先数据库中启用的默认凭据，再 `SILICONFLOW_API_KEY`）。需要配置时从项目根目录运行 `"$PY" main.py`，用 `/keys` 管理硅基流动凭据。不要把密钥写入实验目录。
 

@@ -23,7 +23,7 @@ uv run python -m pytest -q tests/research
 
 ## 保留范围
 
-当前共 **78 个用例**，其中记忆模块 60 个、实验支持 18 个；数量包含参数化分支。
+当前共 **85 个用例**，其中记忆模块 60 个、实验支持 25 个；数量包含参数化分支。原清理保留 78 个，随后为 C1 接入统一协议新增 7 个。
 
 | 文件 | 验证的问题 |
 | --- | --- |
@@ -36,6 +36,7 @@ uv run python -m pytest -q tests/research
 | `memory/test_evidence.py` | 维护模式、工具结果配对、非零退出证据、拒绝未执行结果 |
 | `memory/test_change_log.py` | 记忆新增、修改、删除和索引变更的 JSONL 记录 |
 | `research/test_c1_experiment.py` | 原角色历史回放、首次修改与成本缺失值计算 |
+| `research/test_c1_transfer.py` | C1 统一四组协议、共享准备、严格判分与主入口调度 |
 | `research/test_task_environments.py` | A1/T1 评分器拒绝无效改动、伪造回执及运行时篡改 |
 | `research/test_transfer_run.py` | 迁移保留已学代码、观察证据来源、最终报告及验证命令 |
 

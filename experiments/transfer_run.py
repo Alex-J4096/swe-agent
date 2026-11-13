@@ -1,15 +1,17 @@
-"""One bounded A1/T1 pilot: shared learning/observation, four fresh-session arms."""
+"""C1/A1/T1 transfer: shared learning/observation, four fresh-session arms."""
 import argparse
 import ast
 from contextlib import chdir
 from io import StringIO
 import json
 from pathlib import Path
+import platform
 import random
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import time
 import traceback
@@ -19,6 +21,8 @@ import hashlib
 from experiments.a1 import fixture as a1
 from experiments.a1.evaluate import grade as grade_a1
 from experiments.c1 import run as c
+from experiments.c1 import fixture as c1
+from experiments.c1 import evaluate as c1_eval
 from experiments.task_support import hashes, project_files, save, write_project
 from experiments.t1 import fixture as t1
 from experiments.t1.evaluate import TraceExecutor, command_entry, grade as grade_t1
@@ -26,12 +30,14 @@ from src.ui.console import ConsoleRenderer
 
 ROOT = Path(__file__).resolve().parents[1]
 CONDITIONS = ("none", "full", "default", "revise")
+TASKS = ("c1", "a1", "t1")
+PROTOCOL = "transfer-four-arm-v2"
 REPORT_INSTRUCTION = ('\n最后给出一个 JSON 对象，字段为 tests_run（实际执行数量）、'
                       'failure_ids（失败用例完整 ID 数组）、exit_code（退出码）。')
 
 
 def prompt(task, stage):
-    module = a1 if task == "a1" else t1
+    module = {"c1": c1, "a1": a1, "t1": t1}[task]
     text = getattr(module, stage.upper())
     if task == "a1" and stage != "observe":
         text += ("\n保持现有应用依赖装配、订阅主题和通知接口不变，只修改订单业务流程。"
@@ -116,9 +122,13 @@ def a1_invocations(command, cwd, repo):
 
 
 def approved_command(task, command, cwd, repo):
+    if task == "c1":
+        return c1_eval.service_command(command, cwd, repo)
     if task == "t1":
         return command_entry(command, cwd, repo) is not None
-    return a1_invocations(command, cwd, repo) is not None
+    if task == "a1":
+        return a1_invocations(command, cwd, repo) is not None
+    raise ValueError(task)
 
 
 def restore(repo, state, memory_source=None):
@@ -144,6 +154,10 @@ def turn(directory, repo, sandbox, provider, task, branch, instruction, *, memor
     session = c.Session(model=c.MODEL, history=history, memory_enabled=memory, provider_id="siliconflow")
     trace = TraceExecutor(sandbox, repo, branch, directory / "commands.jsonl") if task == "t1" else None
     shell = c.BashTool(repo, trace or sandbox)
+    if task == "c1":
+        shell.description += (" Validate using python3 service.py (ordinary Python isolation flags"
+                              " and a workspace-local cd prefix are preauthorized)."
+                              " Extra verification scripts and compound commands are not preauthorized.")
     if task == "a1":
         shell.description += (" Validation uses the project's existing CLI: python3 app.py create ORDER-17"
                               " or python3 app.py cancel ORDER-17. Workspace-local cd and sequences of"
@@ -278,15 +292,25 @@ def maintain(directory, repo, provider, run, mode):
         c.stop_experiment_log()
     snapshot(repo, directory / "after")
     save(directory / "input.json", run["maintenance_input"])
+    events = [json.loads(line) for line in (directory / "maintenance.jsonl").read_text().splitlines()]
+    cost = c.usage(events, "memory")
+    save(directory / "cost.json", cost)
+    return cost
 
 
 def prepare(task, lab, repo, sandbox, provider):
     directory = lab / task
     directory.mkdir()
-    initial = a1.sources("stable", "learn") if task == "a1" else t1.sources("stable")
+    initial = (c1_eval.initial_sources() if task == "c1" else
+               a1.sources("stable", "learn") if task == "a1" else t1.sources("stable"))
     restore(repo, initial)
     learning = turn(directory / "learn", repo, sandbox, provider, task, "stable", prompt(task, "learn"), memory=True)
-    if task == "a1":
+    if task == "c1":
+        grade = c1_eval.grade(repo, "stable", sandbox, baseline=initial, goal="learn")
+        verified = c1_eval.verified_runtime(learning, repo, 30)
+        grade["agent_runtime_verification"] = verified
+        accepted = grade["strict_success"] and verified
+    elif task == "a1":
         grade = grade_a1(repo, "stable", sandbox, goal="create", stage="learn")
         cancellation = grade_a1(repo, "stable", sandbox)
         verified = verified_creation(learning, repo)
@@ -299,9 +323,22 @@ def prepare(task, lab, repo, sandbox, provider):
     if not accepted:
         raise RuntimeError(f"{task}: learning prerequisite failed; no retry in this batch")
     learned = project_files(repo)
+    notes = c.MemoryStore(repo).list_visible_memories()
+    facts = [note for note in notes if note["type"] == "project" and note["scope"] == "project"]
+    save(directory / "learning-memories.json", {
+        "notes": notes, "project_fact_count": len(facts),
+        "related_old_memory": None if notes else False,
+        "review": "Review relevance against the learned target; do not inject missing notes.",
+    })
+    costs = {"learning": {"agent": c.usage(learning["events"], "agent"),
+                          "memory": c.usage(learning["events"], "memory")},
+             "observation": {}, "maintenance": {}}
+    save(directory / "costs.json", costs)
     branches = {}
     for branch in ("stable", "changed"):
-        if branch == "stable":
+        if task == "c1":
+            state = c1_eval.branch_sources(learned, branch)
+        elif branch == "stable":
             state = learned
         elif task == "a1":
             state = migrate_a1(learned)
@@ -314,10 +351,18 @@ def prepare(task, lab, repo, sandbox, provider):
                         prompt(task, "observe"), memory=True, maintain=False)
         if project_files(repo) != state or observed["first_state"] is not None:
             raise RuntimeError(f"{task}/{branch}: observation changed task files")
-        marker = ('legacy.subscribe(events.append)' if branch == "stable" else 'bus.subscribe("orders", events.append)') if task == "a1" else f'python3 scripts/test_pricing_{t1.entry(branch)}.py'
-        sequence = evidence_sequence(observed, marker, "app.py" if task == "a1" else ".github/workflows/tests.yml")
+        if task == "c1":
+            marker, source = f'with_name("{c1_eval.target(branch)}")', "service.py"
+        elif task == "a1":
+            marker = 'legacy.subscribe(events.append)' if branch == "stable" else 'bus.subscribe("orders", events.append)'
+            source = "app.py"
+        else:
+            marker, source = f'python3 scripts/test_pricing_{t1.entry(branch)}.py', ".github/workflows/tests.yml"
+        sequence = evidence_sequence(observed, marker, source)
         interface_sequence = evidence_sequence(observed, 'def publish(self, topic, *, payload):', "notifications.py") if task == "a1" else sequence
-        if task == "a1":
+        if task == "c1":
+            runtime_verified = c1_eval.verified_runtime(observed, repo, 30)
+        elif task == "a1":
             runtime_verified = verified_creation(observed, repo)
         else:
             runtime_verified = not any(r.get("entry") or r.get("receipts") for r in observed["records"])
@@ -325,9 +370,14 @@ def prepare(task, lab, repo, sandbox, provider):
              "interface_request_sequence": interface_sequence, "runtime_requirement_met": runtime_verified})
         if not sequence or not interface_sequence or not runtime_verified:
             raise RuntimeError(f"{task}/{branch}: required observation evidence missing")
+        costs["observation"][branch] = {"agent": c.usage(observed["events"], "agent"),
+                                       "memory": c.usage(observed["events"], "memory")}
+        costs["maintenance"][branch] = {}
         for mode in ("default", "revise"):
             restore(repo, state, directory / "learn/after")
-            maintain(directory / f"{branch}-{mode}-maintenance", repo, provider, observed, mode)
+            costs["maintenance"][branch][mode] = maintain(
+                directory / f"{branch}-{mode}-maintenance", repo, provider, observed, mode)
+            save(directory / "costs.json", costs)
         branches[branch] = {"state": state, "prior": learning["history"] + observed["history"]}
     return branches
 
@@ -352,7 +402,11 @@ def run_job(task, branch, condition, branch_data, lab, repo, sandbox, provider):
                                                  (repo / json.loads(e["arguments"]).get("cwd", ".")).resolve(), repo)), None)
         first_action = grade["first_action"]
     else:
-        grade = grade_a1(repo, branch, sandbox)
+        def task_grade(path):
+            return (c1_eval.grade(path, branch, sandbox, baseline=state) if task == "c1"
+                    else grade_a1(path, branch, sandbox))
+
+        grade = task_grade(repo)
         first_sequence = next((e["sequence"] for e in run["events"] if e["event"] == "workspace_delta" and e["changes"]), None)
         if run["first_state"] is None:
             first_grade, first_action = None, "none"
@@ -360,12 +414,13 @@ def run_job(task, branch, condition, branch_data, lab, repo, sandbox, provider):
             with TemporaryDirectory(prefix="action-audit-") as tmp:
                 copy = Path(tmp).resolve()
                 write_project(copy, run["first_state"])
-                first_grade = grade_a1(copy, branch, sandbox)
-            first_action = first_grade.get("action", "unclassified")
+                first_grade = task_grade(copy)
+            first_action = (c1_eval.first_action(state, run["first_state"], branch) if task == "c1"
+                            else first_grade.get("action", "unclassified"))
         save(directory / "first-grade.json", first_grade)
     tools = [e for e in run["events"] if e["event"] == "tool_result" and e.get("component") == "agent"]
     before = [e for e in tools if first_sequence is None or e["sequence"] < first_sequence]
-    if task == "a1" and first_sequence:
+    if task != "t1" and first_sequence:
         before = before[:-1]
     row = {"task": task, "branch": branch, "condition": condition, "first_action": first_action,
            "first_sequence": first_sequence, "reads_before": sum(c.successful_shell_read(e) for e in before),
@@ -377,12 +432,18 @@ def run_job(task, branch, condition, branch_data, lab, repo, sandbox, provider):
     return row
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lab", type=Path)
-    parser.add_argument("--tasks", nargs="+", choices=("a1", "t1"), default=["a1", "t1"])
+    parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(TASKS))
     parser.add_argument("--seed", type=int, default=1134)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_args()
+    if len(args.tasks) != len(set(args.tasks)):
+        raise ValueError("Each task may appear only once; use a new LAB for an independent repeat")
     lab = args.lab.resolve()
     lab.mkdir(parents=True)
     common = Path(subprocess.check_output(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, text=True).strip())
@@ -396,11 +457,13 @@ def main():
                 archive.write(ROOT / name, name)
     order = [(task, branch, condition) for task in args.tasks for branch in ("stable", "changed") for condition in CONDITIONS]
     random.Random(args.seed).shuffle(order)
-    save(lab / "manifest.json", {"purpose": "integration pilot; one learning history per task, one evaluation per cell",
+    save(lab / "manifest.json", {"purpose": "four-arm transfer; one learning history per task, one evaluation per cell",
+         "protocol": PROTOCOL, "tasks": args.tasks, "conditions": CONDITIONS,
          "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
          "sources_sha256": hashlib.sha256((lab / "sources.zip").read_bytes()).hexdigest(),
          "model": c.MODEL, "max_tokens": c.MAX_TOKENS, "max_iterations": c.MAX_TOOL_ITERATIONS,
          "random_seed": args.seed, "order": order, "backend": sandbox.backend_name,
+         "platform": platform.platform(), "python": sys.version,
          "prompts": {task: {stage: prompt(task, stage) for stage in ("learn", "observe", "task")} for task in args.tasks}})
     profile = c.BUILTIN_PROVIDERS[0]
     database = c.AppDatabase(db)
