@@ -31,7 +31,7 @@ from src.ui.console import ConsoleRenderer
 ROOT = Path(__file__).resolve().parents[1]
 CONDITIONS = ("none", "full", "default", "revise")
 TASKS = ("c1", "a1", "t1")
-PROTOCOL = "transfer-four-arm-v3"
+PROTOCOL = "transfer-four-arm-v4"
 REPORT_INSTRUCTION = ('\n最后给出一个 JSON 对象，字段为 tests_run（实际执行数量）、'
                       'failure_ids（失败用例完整 ID 数组）、exit_code（退出码）。')
 
@@ -39,6 +39,9 @@ REPORT_INSTRUCTION = ('\n最后给出一个 JSON 对象，字段为 tests_run（
 def prompt(task, stage):
     module = {"c1": c1, "a1": a1, "t1": t1}[task]
     text = getattr(module, stage.upper())
+    if task == "c1" and stage == "learn":
+        text += ("\n只修改服务实际使用的配置文件，不要同步修改未使用的配置文件。"
+                 "保持启动代码、无关配置字段和现有文件集合不变。")
     if task == "c1" and stage == "observe":
         text = ("请读取服务启动代码，说明启动时实际加载哪个配置文件。"
                 "请实际执行 `python3 service.py`，根据执行输出报告当前生效的超时值和命令退出状态。"

@@ -71,6 +71,8 @@ def test_c1_preparation_shares_original_learning_and_observation_across_workers(
     def turn(directory, repo, sandbox, provider, task, branch, instruction, **kwargs):
         turns.append((directory.name, branch, kwargs))
         if directory.name == "learn":
+            assert "不要同步修改未使用的配置文件" in instruction
+            assert not any(answer in instruction for answer in (fixture.OLD, fixture.NEW))
             path = repo / fixture.OLD
             path.write_text(path.read_text().replace("10", "30"))
             MemoryStore(repo).write_memory_file("loader", "project", "Old loader", "Use settings.toml.")
@@ -258,6 +260,6 @@ def test_default_batch_dispatches_twenty_four_cells_after_shared_preparation(tmp
     for task in ("c1", "a1", "t1"):
         assert sum(row["task"] == task for row in rows) == 8
     manifest = json.loads((lab / "manifest.json").read_text())
-    assert manifest["protocol"] == "transfer-four-arm-v3"
+    assert manifest["protocol"] == "transfer-four-arm-v4"
     assert manifest["conditions"] == ["none", "full", "default", "revise"]
     assert len(manifest["order"]) == 24

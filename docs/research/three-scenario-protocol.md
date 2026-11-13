@@ -1,6 +1,16 @@
 # C1、A1、T1 统一四组实验协议
 
-2026 年 11 月 13 日，C1 已接入 `experiments.transfer_run`。首轮使用 `transfer-four-arm-v2`，实际执行 A1/T1 的 16 个后续任务，C1 的八个因观察前置要求未满足而跳过，见 [首轮结果](three-scenario-01-results.md)。当前修复版标识为 `transfer-four-arm-v3`，尚未运行真实模型批次；下面说明其与 v2 的区别及共用流程。
+2026 年 11 月 13 日，C1 已接入 `experiments.transfer_run`。首轮使用 `transfer-four-arm-v2`，实际执行 A1/T1 的 16 个后续任务，C1 的八个因观察前置要求未满足而跳过，见 [首轮结果](three-scenario-01-results.md)。v3 补跑随后在学习阶段因同步修改闲置配置而未通过，未进入观察和后续任务。本次修复版标识为 `transfer-four-arm-v4`，下面说明两次指令修复及共用流程。
+
+## v4：明确学习阶段只修改实际生效的配置
+
+v3 学习指令仅要求超时调到 30 并验证，模型实际把两份配置都同步到 30；服务运行成功，但闲置配置全文不变的学习验收未通过。这次记录保存在 `.swe-agent/experiments/c1-transfer-v3-01/`，八个后续单元仍全部跳过，不能视为观察指令修复失败。
+
+v4 保留学习目标，在统一驱动的 C1 学习指令中补充：
+
+> 只修改服务实际使用的配置文件，不要同步修改未使用的配置文件。保持启动代码、无关配置字段和现有文件集合不变。
+
+这条指令没有指定正确配置文件名。验收、记忆机制、预算及后续任务指令保持原样。v4 使用新目录和新学习／观察，不把前置失败删除或算成重试成功。
 
 ## v3：明确 C1 观察的执行要求
 
@@ -56,13 +66,13 @@ C1 批准既有 `service.py` 的直接 Python 调用、常用隔离参数及工�
 从仓库根目录执行，LAB 必须是新目录：
 
 ```bash
-uv run python -m experiments.transfer_run .swe-agent/experiments/three-scenario-v3-01 --seed 1134
+uv run python -m experiments.transfer_run .swe-agent/experiments/three-scenario-v4-01 --seed 1134
 ```
 
 默认选择 C1、A1、T1。只执行 C1 的八个后续单元时：
 
 ```bash
-uv run python -m experiments.transfer_run .swe-agent/experiments/c1-transfer-v3-01 --tasks c1 --seed 1134
+uv run python -m experiments.transfer_run .swe-agent/experiments/c1-transfer-v4-01 --tasks c1 --seed 1134
 ```
 
 开始正式批次前，提交并固定包含当前驱动的版本及提示、预算和评分规则。运行保存 manifest（协议、Git 提交、平台、Python、模型、预算、提示和顺序）、源码压缩包及 SHA-256、各阶段 JSONL、原角色历史、维护输入、前后快照、独立判分、共享成本和失败记录。数据库、评测源码和实验记录位于任务沙箱之外。
