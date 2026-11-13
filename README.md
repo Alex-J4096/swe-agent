@@ -100,8 +100,10 @@ flowchart LR
 
 ## 开发与文档
 
+当前实验分支仅保留记忆机制与实验有效性测试，范围与目录见 [测试说明](tests/README.md)。
+
 ```bash
-uv run pytest
+uv run python -m pytest -q
 ```
 
 | 入口 | 内容 |

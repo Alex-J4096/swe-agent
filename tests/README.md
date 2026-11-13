@@ -1,38 +1,55 @@
-# 测试说明
+# 实验分支测试
 
-在仓库根目录运行：
+`codex/memory-revision` 用于研究仓库变化后的跨会话记忆。这里的自动化测试只维护记忆机制和实验有效性；通用 CLI、密钥管理、数据库迁移、团队、审批与终端等开发测试已从本分支移除，仍可在主分支及 Git 历史中查阅。
+
+## 运行
+
+在仓库根目录执行：
 
 ```bash
 uv run python -m pytest -q
 ```
 
-系统临时目录不可访问时，可指定专用目录：
+只验证一个部分：
 
 ```bash
-uv run python -m pytest -q --basetemp=.swe-agent/pytest-temp
+uv run python -m pytest -q tests/memory
+uv run python -m pytest -q tests/research
 ```
 
-## 测试范围
+临时目录不可访问时，可加 `--basetemp=.swe-agent/pytest-temp`。`pyproject.toml` 将默认收集目录限定为 `tests`，避免收集实验生成工程中的任务测试。
 
-| 文件 | 验证内容 |
+所有模型响应均为确定性的模拟数据，不调用模型 API，不需要真实密钥或 Docker。实验评分测试会在临时目录内用本地 Python 执行内置的小工程；这不等于验证生产 Shell 沙箱。
+
+## 保留范围
+
+当前共 **78 个用例**，其中记忆模块 60 个、实验支持 18 个；数量包含参数化分支。
+
+| 文件 | 验证的问题 |
 | --- | --- |
-| `test_keys_management.py`、`test_model_selection_errors.py` | 密钥管理、来源、错误脱敏与模型选择 |
-| `test_selection_menu.py`、`test_slash_commands.py`、`test_terminal.py` | 模糊搜索、键盘选择、命令补全与单键审批 |
-| `test_permission_scopes.py`、`test_permissions.py`、`test_approval_runtime.py` | 精确授权、审批、拒绝与停止 |
-| `test_persistence.py`、`test_context_rewind.py` | 数据迁移、会话恢复与上下文分支 |
-| `test_sandbox.py`、`test_interrupt.py` | 执行边界、环境清洗与中断 |
-| `test_host_execution.py` | 显式 host 启动、每次审批、PowerShell 执行、超时取消和来源展示 |
-| `test_task.py`、`test_background_task.py`、`test_teams.py` | 任务、后台事件、团队与 worktree |
-| 其他 `test_*.py` | Memory、压缩、重试与终端渲染 |
+| `memory/test_store.py` | 笔记读写、索引、默认提取与整合基线 |
+| `memory/test_scopes.py` | 会话隔离、旧笔记作用域与提取来源 |
+| `memory/test_selection.py` | 默认检索、候选过滤、动态模型选择与缓存 |
+| `memory/test_worker.py` | 后台维护使用独立快照，失效分支不能提交 |
+| `memory/test_revision_tools.py` | 搜索、先读后改、版本冲突、创建、防覆盖、回滚及元数据解析 |
+| `memory/test_revision_worker.py` | 修订子智能体完整调用、取消、空库创建与日志关联 |
+| `memory/test_evidence.py` | 维护模式、工具结果配对、非零退出证据、拒绝未执行结果 |
+| `memory/test_change_log.py` | 记忆新增、修改、删除和索引变更的 JSONL 记录 |
+| `research/test_c1_experiment.py` | 原角色历史回放、首次修改与成本缺失值计算 |
+| `research/test_task_environments.py` | A1/T1 评分器拒绝无效改动、伪造回执及运行时篡改 |
+| `research/test_transfer_run.py` | 迁移保留已学代码、观察证据来源、最终报告及验证命令 |
 
-## 平台与保留用例
+`memory/support.py` 集中维护模拟客户端与证据构造；`research/conftest.py` 提供本地执行器 fixture，测试模块之间不互相导入。
 
-- POSIX 终端集成测试在 Windows 跳过；OS 沙箱集成测试需要可用后端。
-- 中断单元测试模拟 POSIX 进程接口，不要求 Windows 提供 `killpg`／`SIGKILL`。
-- 中断回归包含两次 Esc 确认、阻塞模型取消、迟到结果隔离、重试取消、Windows 按键与输入锁协调；POSIX 终端恢复另有集成测试。
-- worktree 集成测试在 `.swe-agent/test-worktrees/` 创建短路径临时仓库，完成后清理。
-- 菜单交互测试需要本地事件循环通信；受限沙箱可能阻塞，应在普通终端运行。
-- Windows 当前未实现 `FileLock` 的互斥后端，并发领取测试会暴露重复领取或文件替换竞争；应修复实现，不跳过或放宽断言。
-- 旧 `--reset-key`、前缀授权、旧 schema 等用例用于验证移除行为与迁移兼容，不是失效测试。
+`fixtures/memory_revision/` 保留真实试跑中脱敏后的 A1 空库观察与 T1 失败执行提案。它们是确定性故障回归输入，不能当成新的模型实验结果。
 
-密钥与模型测试使用模拟凭据和客户端，不需要真实 API Key。
+## 本次清理
+
+从 346 个用例收窄到 78 个：
+
+- 移除与本分支研究无关的 261 个通用智能体开发用例，以及 3 个通用 CLI 启动分支。
+- 移除 1 个仅匹配 A1 提示词字面的测试；任务约束仍由行为评分测试验证。
+- 合并 3 个重复检查：将旧记忆措辞差异并入完整修订流程，将证据错误的重试提示并入非法更新测试，将偏好持久化与默认作用域检查合并。
+- 保留不同创建/更新入口的校验、失败证据、取消、回滚与跨会话隔离检查。这些边界直接影响实验处理组和结果，不能只因断言相似而删除。
+
+此前报告中的测试数量属于当时版本，本次不改写历史验证记录。这里的通过结果说明实验基础设施和记忆边界符合断言，真实模型的行为、成本和研究结论仍需正式实验验证。

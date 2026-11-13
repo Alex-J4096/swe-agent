@@ -165,7 +165,10 @@ class MemoryStore:
 
     def read_revision_memory(self, filename: str) -> dict[str, Any] | None:
         """Read a mutable project fact with an opaque whole-file version."""
-        path = self._resolve_memory_path(filename)
+        try:
+            path = self._resolve_memory_path(filename)
+        except ValueError:
+            return None
         if path.is_symlink() or path.resolve().parent != self.memory_dir.resolve():
             return None
         raw = self.read_memory_file(filename)
@@ -182,6 +185,57 @@ class MemoryStore:
             "status": metadata.get("revision", {}).get("status", "active")
             if isinstance(metadata.get("revision"), dict) else "active",
         }
+
+    def create_revision_memory(
+        self,
+        name: str,
+        description: str,
+        body: str,
+        *,
+        status: str,
+        reason: str,
+        evidence: list[dict[str, Any]],
+        should_commit: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Create a project fact atomically; never use creation to overwrite a note."""
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) or name == "memory":
+            return {"ok": False, "error": "invalid_name"}
+        if status not in {"active", "suspect"}:
+            return {"ok": False, "error": "invalid_status"}
+        if not description.strip() or not body.strip() or not reason.strip() or not evidence:
+            return {"ok": False, "error": "missing_revision_content"}
+        if body.lstrip().startswith("---"):
+            return {"ok": False, "error": "body_must_exclude_frontmatter"}
+        if status == "suspect":
+            description = "[Pending verification] " + description.removeprefix("[Pending verification] ")
+            body = "[Pending verification] " + body.removeprefix("[Pending verification] ")
+        path = self.memory_dir / f"{name}.md"
+        with self._mutation():
+            if should_commit is not None and not should_commit():
+                return {"ok": False, "error": "cancelled"}
+            if path.exists() or path.is_symlink():
+                return {"ok": False, "error": "memory_exists", "filename": path.name,
+                        "guidance": "Read the existing project note and update its version; do not overwrite or rename it."}
+            # The pilot also exposed identical facts created under filename-like aliases.
+            if any(note["description"].strip() == description.strip() and note["body"].strip() == body.strip()
+                   for note in self.list_visible_memories()):
+                return {"ok": False, "error": "duplicate_memory"}
+            metadata = {
+                "name": name, "description": description.strip(), "type": "project", "scope": "project",
+                "revision": {"status": status, "evidence": evidence, "reason": reason.strip()},
+            }
+            content = "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+            content += "\n---\n\n" + body.strip() + "\n"
+            if should_commit is not None and not should_commit():
+                return {"ok": False, "error": "cancelled"}
+            self._change_file(path, content)
+            try:
+                self._rebuild_index()
+            except OSError:
+                self._change_file(path, None)
+                raise
+            return {"ok": True, "outcome": "created", "filename": path.name,
+                    "version": hashlib.sha256(content.encode("utf-8")).hexdigest()}
 
     def update_memory(
         self,
@@ -923,7 +977,9 @@ class MemoryStore:
             closing_index = next(
                 index
                 for index, line in enumerate(lines[1:], start=1)
-                if line.strip() == "---"
+                # Indented separators can occur inside quoted multiline evidence.
+                # Only a delimiter at column zero closes YAML frontmatter.
+                if line.rstrip() == "---"
             )
         except StopIteration:
             return {}, text.strip()

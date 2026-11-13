@@ -9,6 +9,28 @@ if TYPE_CHECKING:
     from src.infrastructure.memory import MemoryStore, Memory
 
 
+def evidence_kind(tool: str | None, result: Any) -> str | None:
+    """Classify observations without confusing a failed command with no execution."""
+    if not isinstance(result, dict):
+        return None
+    if any(result.get(key) for key in ("permission_denied", "error", "timed_out", "cancelled", "interrupted")):
+        return None
+    if tool == "run_bash":
+        if result.get("ok") is True:
+            if result.get("exit_code") is not None and (type(result["exit_code"]) is not int or result["exit_code"] != 0):
+                return None
+            return "command_succeeded"
+        code = result.get("exit_code")
+        # Our executors report timeout/unavailable as -1 and signals as negative.
+        # 126/127 are shell invocation failures, not results of the requested program.
+        if (result.get("ok") is False and type(code) is int and code > 0 and code not in {126, 127}
+                and isinstance(result.get("stdout"), str) and isinstance(result.get("stderr"), str)):
+            return "command_failed"
+    elif tool in {"read_file", "edit_file", "write_file"} and result.get("ok") is True:
+        return "file_observed" if tool == "read_file" else "file_changed"
+    return None
+
+
 def evidence_dialogue(
     messages: list[dict[str, Any]],
     max_chars: int = 12_000,
@@ -39,6 +61,7 @@ def evidence_dialogue(
             "arguments": arguments,
             "result": output,
         }
+        packet["evidence_kind"] = evidence_kind(packet["tool"], output)
         text = "tool: " + json.dumps(packet, ensure_ascii=False)
         packets.append((text, packet))
     selected = []
@@ -52,8 +75,7 @@ def evidence_dialogue(
     evidence = {
         packet["evidence_id"]: packet
         for _, packet in selected
-        if packet and packet["evidence_id"] and packet["tool"] in {"read_file", "run_bash", "edit_file", "write_file"}
-        and isinstance(packet["result"], dict) and packet["result"].get("ok") is True
+        if packet and packet["evidence_id"] and packet["evidence_kind"] is not None
     }
     return "\n".join(text for text, _ in selected), evidence
 

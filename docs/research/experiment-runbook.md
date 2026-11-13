@@ -107,7 +107,7 @@ Linux 需要能实际启动非特权 bubblewrap 的环境，macOS 需要允许�
 
 ## 实验性自动修订
 
-当前实验实现已按 [固定版本记录](memory-revision-freeze.md) 固定，后续 C1 对照使用该记录中的 Git 标记和预算。
+C1 已使用 [固定版本记录](memory-revision-freeze.md) 中的提交完成对照。当前 worktree 又修复了空库和非零执行证据，见 [修复记录](memory-boundary-fix.md)；它是后续实现，旧固定标记与旧结果保持原义。
 
 实验分支提供启动参数 `--memory-maintenance default|evidence|revise`。默认值为 `default`。三种模式都在正常会话结束后由 MemoryWorker 执行。
 
@@ -115,7 +115,7 @@ Linux 需要能实际启动非特权 bubblewrap 的环境，macOS 需要允许�
 |---|---|
 | default | 原来的提取与达到阈值后的批量整理。 |
 | evidence | 提取时按 tool_call_id 配对工具名、参数与返回值；仍使用原提取规则和批量整理。 |
-| revise | 独立记忆 subagent 搜索、读取、提交完整笔记更新并读回检查。沿用正常 AgentRunner，最多八轮工具迭代。跳过原来的整篇批量整理。 |
+| revise | 独立记忆 subagent 搜索、读取、创建或提交完整笔记更新并读回检查。沿用正常 AgentRunner，最多八轮工具迭代。跳过原来的整篇批量整理。 |
 
 在任务仓库中启动实验分支的程序，例如：
 
@@ -128,16 +128,26 @@ cd /path/to/task-repo
 
 subagent 有独立会话，收到本轮证据和初始候选文件名。初始候选仍来自现有关键词检索。它可通过 search_memory 扩展搜索，该工具结合正文关键词和摘要近似度排序，也可用空查询列出项目事实。可搜索和修订的范围为项目范围的 project 类型笔记。
 
-read_memory 返回分开的摘要、正文和整个文件的版本哈希。update_memory 接收文件名、读到的版本、完整新摘要、完整新正文、active/suspect 状态、原因及证据 ID。代码要求先读后写，引用本轮成功的工具回执，且至少包含一条读取或运行观察。编辑回执可一同引用以说明时序。无效引用会返回可用证据 ID；仅引用编辑操作会返回 missing_observation。提交前检查整个文件版本。笔记的名称、类型、范围等元数据由存储层保留。正文不接受 frontmatter。suspect 状态自动附加 Pending verification 提示。
+read_memory 返回分开的摘要、正文和整个文件的版本哈希。update_memory 接收文件名、读到的版本、完整新摘要、完整新正文、active/suspect 状态、原因及证据 ID，只修改已存在的笔记。create_memory 用于新的独立项目事实，不要求旧版本，不覆盖已有文件。空库时可直接新增或无新增退出。
+
+两个写入工具都校验本轮可用证据，至少包含一条读取或运行观察。命令返回非零结果时标为 command_failed，是失败观察而非验证成功；权限拒绝、超时及未执行不纳入此类证据。成功编辑回执可作为辅助证据。无效引用返回可用 ID；仅引用编辑操作返回 missing_observation。更新前检查整个文件版本。笔记名称、类型、范围等原有元数据保留，正文不接受 frontmatter；suspect 自动附加 Pending verification 提示。
 
 更新使用存储层统一提交，正文和索引同步写入，索引写入失败会回滚正文。版本冲突时工具返回 stale_version，subagent 可重新读取并修改。已取消维护会拒绝提交，并在下一次模型请求前结束。笔记版本变化使旧选择缓存失效。模型需要保留无关经验和验证命令，其语义正确性与保留质量仍需实验评价。
 
-三个记忆工具在专用权限策略中授权。该 subagent 的工具集限定为 search_memory、read_memory、update_memory，采用后台执行方式。正常的文件编辑及命令工具仍按原权限策略运行。
+四个记忆工具在专用权限策略中授权。该 subagent 的工具集限定为 search_memory、read_memory、create_memory、update_memory，采用后台执行方式。正常的文件编辑及命令工具仍按原权限策略运行。
 
-JSONL 中 memory_subagent_started/finished 记录独立会话的执行情况。模型调用和工具结果的 component 为 memory，可与前台 agent 分别统计。memory_revision_decision 记录更新内容与 committed、read_required、invalid_evidence、stale_version、write_error 等结果；memory_change 保留实际写入前后内容，沿用原 maintenance_id。memory_consolidation_skipped 表示原批量整理已跳过。未开启日志时，修订状态与证据仍存在笔记 frontmatter 内。
+JSONL 中 memory_subagent_started/finished 记录独立会话、created、updated 和 error。模型调用和工具结果的 component 为 memory，可与前台 agent 分别统计。memory_revision_decision 记录 created、committed、memory_exists、read_required、invalid_evidence、stale_version、write_error 等结果；memory_change 保留实际写入前后内容，沿用原 maintenance_id。memory_consolidation_skipped 表示原批量整理已跳过。未开启日志时，修订状态与证据仍存在笔记 frontmatter 内。
 
 早期 C1 自动修订报告使用原 old_claim 精确子串接口，其结果保持为历史记录。当前 subagent 版本通过完整笔记和版本标识提交更新。实验汇总分别统计前台工具调用和 maintenance_tools，并将 subagent 模型用量计入 memory 成本。
 
 2026 年 11 月 13 日完成 subagent 功能回归。首轮暴露了复合引用被过度拒绝的问题：模型同时引用成功的编辑、回读和运行证据，工具仍因编辑 ID 不在允许列表而拒绝。修正后允许成功编辑/写入作为补充证据，同时要求至少一条读取或运行观察，并向失败调用返回可用 ID。
 
 最终版本复测原四个 claim_mismatch 场景及两个稳定场景，共六次真实模型维护。三个有明确启动代码的场景正确更新入口，一个只有运行冲突的场景写入 suspect，两个稳定场景保留了正确入口并补充本轮已验证信息。原验证偏好和任务文件保留。原始记录、源代码快照和 verification.json 位于本机 `.swe-agent/experiments/c1-subagent-smoke-02/`。初轮失败记录位于同级 c1-subagent-smoke-01。功能回归未执行后续编程任务，其结果不计入上一轮行为对照。
+
+同日已完成固定提交 `86c1370` 的完整 C1 行为验证：36 次维护和 36 次后续任务，数据在主仓库 `.swe-agent/experiments/c1-subagent-revision-01/`。修订组首次正确、严格成功均为 12/12，补全来源组均为 9/12；修订组全流程 token 为后者 2.94 倍。四条待复核笔记在后续源码及运行证据出现后恢复为 active。报告保留了一次重复笔记和一次最终更新后未读回的问题。详见 [C1 subagent 行为结果及收尾决策](subagent-memory-revision-results.md)。本批运行期间没有修改固定代码，下一步扩展任务类型。
+
+## A1 与 T1 环境
+
+后续进度：现已接通 experiments.transfer_run，并完成 16 个真实模型后续任务。见 [试跑协议](a1-t1-pilot.md) 和 [试跑结果](a1-t1-pilot-results.md)。T1 使用 pilot-01 的八次结果，A1 使用 pilot-04 的八次结果；其间三次 A1 前置失败均保留。A1 学习未留下笔记，修订组空库处理未成功；T1 后续维护存在非零测试退出回执被拒绝的问题。上述两处后续已完成 [工程修复和功能验证](memory-boundary-fix.md)，未合入原试跑行为计数。正式批次尚未启动，环境控制和模型试跑分别计数。
+
+通知后端迁移和测试入口切换的项目、独立评分器、部署与预检入口现已实现，见 [A1/T1 环境手册](a1-t1-environments.md)。从当前 worktree 执行 `python -m experiments.environments deploy LAB`，再执行 `python -m experiments.environments check LAB`。LAB 使用新的空目录，预检不调用模型。2026 年 11 月 13 日在 macOS sandbox-exec 上通过 31 个控制案例与隔离检查，五份项目快照位于当前 worktree 的 `.swe-agent/experiments/a1-t1-environments-01/fixtures/`。真实模型链路试跑情况见上段结果报告。
