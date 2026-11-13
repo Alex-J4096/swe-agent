@@ -1,9 +1,10 @@
-from src.infrastructure.experiment_log import logged_completion, record_event
+from src.infrastructure.experiment_log import experiment_log_status, logged_completion, record_event
 import json
 import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from collections.abc import Callable
 from typing import Any
 
@@ -19,6 +20,7 @@ MEMORY_SCOPES = ("session", "project")
 # sessions; everything else is session-scoped unless the extractor promotes it.
 DURABLE_MEMORY_TYPES = ("user", "feedback", "reference")
 MEMORY_INDEX_NAME = "MEMORY.md"
+_file_change_lock = Lock()
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ class MemoryStore:
             default_flow_style=False,
         ).strip()
         body = memory.content.rstrip()
-        self._atomic_write(
+        self._change_file(
             file_path,
             f"---\n{frontmatter}\n---\n\n{body}\n",
         )
@@ -623,7 +625,7 @@ class MemoryStore:
         for filename in files_to_remove:
             path = self._resolve_memory_path(filename)
             if path.exists() and path.is_file():
-                path.unlink()
+                self._change_file(path, None)
 
         if files_to_remove:
             self._rebuild_index()
@@ -762,16 +764,41 @@ class MemoryStore:
                 f"- [{memory['name']}]({memory['filename']}) — {description}"
             )
 
-        self._atomic_write(
+        self._change_file(
             self.memory_index,
             "\n".join(lines) + "\n" if lines else "",
         )
 
     @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
-        temporary_path = path.with_name(f".{path.name}.tmp")
-        temporary_path.write_text(content, encoding="utf-8")
-        temporary_path.replace(path)
+    def _change_file(path: Path, content: str | None) -> None:
+        """Capture each note or index change at its filesystem commit boundary."""
+        with _file_change_lock:
+            log_path, run_id = experiment_log_status()
+            before = None
+            if log_path is not None:
+                try:
+                    before = path.read_text(encoding="utf-8", errors="replace")
+                except FileNotFoundError:
+                    pass
+            target = "index" if path.name == MEMORY_INDEX_NAME else "note"
+            operation = "delete" if content is None else ("create" if before is None else "update")
+            try:
+                if content is None:
+                    path.unlink()
+                else:
+                    temporary_path = path.with_name(f".{path.name}.tmp")
+                    temporary_path.write_text(content, encoding="utf-8")
+                    temporary_path.replace(path)
+            except OSError as exc:
+                if log_path is not None:
+                    record_event("memory_change_error", expected_run_id=run_id,
+                                 target=target, filename=path.name, operation=operation,
+                                 error_type=type(exc).__name__, error=str(exc))
+                raise
+            if log_path is not None and before != content:
+                record_event("memory_change", expected_run_id=run_id,
+                             target=target,
+                             filename=path.name, operation=operation, before=before, after=content)
 
     def _resolve_memory_path(self, name: str) -> Path:
         file_name = name if name.endswith(".md") else f"{self._slugify(name)}.md"

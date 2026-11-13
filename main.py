@@ -166,6 +166,57 @@ def merge_memory_filenames(
     return merged
 
 
+def prepare_turn_prompt(
+    session: Session,
+    toolset: ToolSet,
+    workdir: Path,
+    memory_store: MemoryStore,
+    memory_selection_cache: MemorySelectionCache,
+) -> str:
+    system_prompt = build_system_prompt(
+        toolset,
+        workdir,
+        memory_store,
+        session_id=session.session_id,
+        memory_enabled=session.memory_enabled,
+    )
+    memory_context = ""
+    if session.memory_enabled:
+        memory_revision = memory_store.memory_revision()
+        local_files = memory_store.select_relevant_memories(
+            session.history,
+            use_llm=False,
+            session_id=session.session_id,
+        )
+        cached_files = memory_selection_cache.get_compatible(
+            session_id=session.session_id,
+            messages=session.history,
+            memory_revision=memory_revision,
+        )
+        selected_files = merge_memory_filenames(
+            local_files,
+            cached_files,
+        )
+        memory_context = memory_store.load_memories_by_filenames(
+            selected_files,
+            session_id=session.session_id,
+        )
+    record_event("memory_selection", session_id=session.session_id,
+                 enabled=session.memory_enabled,
+                 local_files=local_files if session.memory_enabled else [],
+                 cached_files=cached_files if session.memory_enabled else [],
+                 selected_files=selected_files if session.memory_enabled else [],
+                 memory_context=memory_context)
+    turn_system_prompt = system_prompt
+    if memory_context:
+        turn_system_prompt = (
+            f"{system_prompt}\n\n"
+            f"Relevant memories:\n{memory_context}"
+        )
+
+    return turn_system_prompt
+
+
 def confirm_team_plan_continuation(
     renderer: ConsoleRenderer,
     name: str,
@@ -398,46 +449,9 @@ def main(argv=None) -> None:
                 renderer.start_thinking("Preparing · Esc/Ctrl+C to stop")
                 session.history.append({"role": "user", "content": query})
                 save_session_if_needed(session_store, session, workdir)
-                system_prompt = build_system_prompt(
-                    toolset,
-                    workdir,
-                    memory_store,
-                    session_id=session.session_id,
-                    memory_enabled=session.memory_enabled,
+                turn_system_prompt = prepare_turn_prompt(
+                    session, toolset, workdir, memory_store, memory_selection_cache,
                 )
-                memory_context = ""
-                if session.memory_enabled:
-                    memory_revision = memory_store.memory_revision()
-                    local_files = memory_store.select_relevant_memories(
-                        session.history,
-                        use_llm=False,
-                        session_id=session.session_id,
-                    )
-                    cached_files = memory_selection_cache.get_compatible(
-                        session_id=session.session_id,
-                        messages=session.history,
-                        memory_revision=memory_revision,
-                    )
-                    selected_files = merge_memory_filenames(
-                        local_files,
-                        cached_files,
-                    )
-                    memory_context = memory_store.load_memories_by_filenames(
-                        selected_files,
-                        session_id=session.session_id,
-                    )
-                record_event("memory_selection", session_id=session.session_id,
-                             enabled=session.memory_enabled,
-                             local_files=local_files if session.memory_enabled else [],
-                             cached_files=cached_files if session.memory_enabled else [],
-                             selected_files=selected_files if session.memory_enabled else [],
-                             memory_context=memory_context)
-                turn_system_prompt = system_prompt
-                if memory_context:
-                    turn_system_prompt = (
-                        f"{system_prompt}\n\n"
-                        f"Relevant memories:\n{memory_context}"
-                    )
 
                 team_runtime = command_context.team_runtime
                 if team_runtime is not None:

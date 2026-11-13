@@ -3,6 +3,7 @@ from copy import deepcopy
 from threading import Lock
 from typing import Any
 
+from src.infrastructure.experiment_log import experiment_log_status, memory_maintenance
 from src.infrastructure.memory import Memory, MemoryStore
 
 
@@ -28,11 +29,13 @@ class MemoryWorker:
         snapshot = deepcopy(messages)
         with self._lock:
             generation = self._generation
+            path, run_id = experiment_log_status()
             future = self._executor.submit(
                 self._process,
                 generation,
                 snapshot,
                 session_id,
+                run_id if path else None,
             )
             self._futures.add(future)
         future.add_done_callback(self._discard_future)
@@ -63,6 +66,7 @@ class MemoryWorker:
         generation: int,
         messages: list[dict[str, Any]],
         session_id: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[list[Memory], list[Memory]]:
         extracted: list[Memory] = []
         consolidated: list[Memory] = []
@@ -71,11 +75,12 @@ class MemoryWorker:
             return extracted, consolidated
 
         try:
-            extracted = self.store.extract_memories(
-                messages,
-                should_commit=lambda: self._is_current(generation),
-                session_id=session_id,
-            )
+            with memory_maintenance(run_id, session_id, "extract"):
+                extracted = self.store.extract_memories(
+                    messages,
+                    should_commit=lambda: self._is_current(generation),
+                    session_id=session_id,
+                )
         except Exception:
             # Memory maintenance must not affect the agent's next turn.
             pass
@@ -84,7 +89,8 @@ class MemoryWorker:
             return extracted, consolidated
 
         try:
-            consolidated = self.store.consolidate_memories()
+            with memory_maintenance(run_id, session_id, "consolidate"):
+                consolidated = self.store.consolidate_memories()
         except Exception:
             # A failed maintenance pass is safe to retry on a later round.
             pass

@@ -6,7 +6,7 @@
 
 ```bash
 AGENT=$(pwd -P)
-uv sync --frozen
+UV_CACHE_DIR="$AGENT/.uv-cache" uv sync --frozen
 PY="$AGENT/.venv/bin/python"
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/agent-memory.XXXXXX")
 mkdir -p "$LAB"/{logs,work,snapshots,results}
@@ -20,7 +20,7 @@ case "$(uname -s)" in
 esac
 ```
 
-保留这个终端以复用变量。实验结束后把整个 LAB 目录复制到长期保存的位置。两个平台分别使用本机的虚拟环境；搬机器时复制数据、代码和日志，再运行 uv sync。若有未跟踪的实验代码，也一并保存。Linux 默认沙箱依赖 bubblewrap，macOS 依赖 sandbox-exec；用一次实际读文件、执行 Python 的操作验证权限。记录系统、所选模型及执行模式，同一组成对比较使用同一平台。
+保留这个终端以复用变量。实验结束后把整个 LAB 目录复制到长期保存的位置。两个平台分别使用本机的虚拟环境；搬机器时复制数据、代码和日志，再运行 uv sync。若有未跟踪的实验代码，也一并保存。本次只做 C1 时可从第 1 节直接到第 3 节。Linux 默认沙箱依赖 bubblewrap，macOS 依赖 sandbox-exec；用一次实际读文件、执行 Python 的操作验证权限。记录系统、所选模型及执行模式，同一组成对比较使用同一平台。
 
 ## 2. 跑论文的事实更新任务
 
@@ -45,85 +45,61 @@ git ls-files | grep -Ei 'longcontext|fact_sh|fact_mh|6k'
 
 正式复现使用作者 README 的 Quick Setup 和 long-context 入口。按检出版本的脚本找到实际调用的 Python 入口，把 agent 配置限定为表 5 的 GPT-4o，数据配置限定为 6K 的两个任务，再执行该条命令。先各跑一题，核对发送的上下文、提示、模型标识和输出，再跑所选任务的全部问题。保存配置、数据修订号、逐题预测、参考答案和官方 `substring_exact_match` 分数。表 5 的参考值为单跳 92%、多跳 28%；使用替代模型时另列模型与结果。作者 README 的 Bash 路径可能随提交变化，以刚才列出的实际文件为准。[作者运行说明](https://github.com/HUST-AI-HYZ/MemoryAgentBench) · [论文表 5](https://arxiv.org/html/2507.05257v4)
 
-## 3. 搭建自己的第一个任务
+## 3. 在本机验证 C1，再运行真实模型
 
-下面的小程序只用 Python 标准库。两个配置文件同时存在，程序打印实际读取的值；由此可以独立判断 agent 的修改有没有生效。
+从第 1 节的 Bash 终端执行。驱动使用本项目 Python 3.13、内置 SiliconFlow 默认模型和 CLI 相同的凭据解析顺序（先数据库中启用的默认凭据，再 `SILICONFLOW_API_KEY`）。需要配置时从项目根目录运行 `"$PY" main.py`，用 `/keys` 管理硅基流动凭据。不要把密钥写入实验目录。
 
 ```bash
-mkdir "$LAB/work/seed"
-cd "$LAB/work/seed"
-printf 'timeout = 10\n' > settings.toml
-cp settings.toml app.toml
-cat > service.py <<'PY'
-from pathlib import Path
-import tomllib
-
-config = Path(__file__).with_name("settings.toml")
-print(tomllib.loads(config.read_text())["timeout"])
-PY
-"$PY" service.py
-start_agent() {
-  "$PY" "$AGENT/main.py" --experiment-log "$LAB/logs/$1.jsonl"
-}
-start_agent learn
+cd "$AGENT"
+"$PY" -m experiments.c1.run "$LAB/c1-controls" --check-only
+"$PY" -m experiments.c1.run "$LAB/c1-live" --seed 4096
 ```
 
-期望初始输出为 10。此例把研究计划里的旧 YAML 换成 TOML，以免解析器差异影响路径选择。首次启动用 `/model` 选择模型，必要时按仓库 README 配置服务商。输入“请把服务的请求超时调到 30 秒，并验证修改生效”。检查 `learn.jsonl` 中的模型请求与工具结果，确认运行时返回 30。等待后台记忆提取返回，检查工作区的 `.swe-agent/memory`，记录它是否自然保存了配置经验，再退出。记忆未生成也是结果，不手工补写。
+第一条命令无需模型。它在真实 shell 沙箱里尝试读取外部标记和 agent 源码，检查这两次读取都被拒绝，随后分别在稳定版、迁移版只改一个配置并启动新进程。四个期望值依次是 60、30、30、60。第二条命令先重复这些自检，再运行一次学习、两次观察和六次第三阶段任务。每次选择新的空输出目录，失败记录留在原处。随机种子只固定六组的执行顺序。
+
+初始工作区包含 `settings.toml`、`app.toml`、`service.py`。这里沿用手册的双 TOML 设计，两份配置均含 `timeout` 和无关字段 `port`。第一阶段要求 agent 把 10 改为 30 并实际验证。两个分支随后都从这次成功经验出发，都将两份配置的超时设为 30，只有启动代码中的文件名不同。观察阶段沿用同一条只读指令。驱动在后续发送的模型请求的工具消息中查找实际加载代码，记录首次出现的事件序号。缺失时保留空值，单列这类轨迹。
+
+每次会话均在相同的中性绝对路径下运行。驱动使用真实的 AgentRunner、文件读写、shell 和待办工具，关闭了与 C1 无关的委派、后台任务、上下文回退和技能工具。对通常需要确认的 shell 命令，统一批准 `python service.py`、`python3 service.py` 等列入驱动的本地验证命令。其他需要确认的操作会收到拒绝。单会话最多 10 轮，正常输出上限 1024 token，沿用 runner 的截断恢复机制。启动命令中的 seed、条件与标准答案保存在外部目录。所有组使用同一套工具、权限、模型和预算。
+
+| 第三阶段 | 初始化方式 |
+|---|---|
+| 无记忆（none） | 从对应快照只复制三个任务文件，关闭记忆，无前序消息。 |
+| 完整历史（full） | 同样关闭记忆，将学习及对应分支观察会话的原始 user、assistant（含 tool_calls）、tool（含 tool_call_id）消息按顺序送入每次主请求。驱动在本轮压缩范围外保留此前消息，并逐次核对请求前缀。 |
+| 默认记忆（default） | 从同一快照额外复制自然生成的 `.swe-agent/memory`。使用 CLI 的索引、关键词选择、缓存、正文和后台提取逻辑。每个新会话有新的选择缓存。 |
+
+只有学习与观察阶段产生的自然记忆可以进入快照。每次结束都等待提取与选择线程完成，再关闭 JSONL 和复制快照。交互式 CLI 自身使用 `shutdown(wait=False)`，而 `/experiment off` 会立即停止记录。手动试跑可用 `/experiment on <外部路径>`、`/experiment status`、`/experiment off`，或启动时指定 `--experiment-log`。省略路径会写到当前仓库内，文本回放只适用于调试。正式 C1 比较请使用上面的驱动。
+
+首轮 macOS 结果含六次独立判分，支持离线核对下列步骤。[逐次结果与原始证据包](c1-pilot-2026-11-12.md)
+
+## 4. 从一行结果复核到模型请求
 
 ```bash
-cd "$LAB/work"
-for version in stable changed; do
-  cp -R seed "$version"
-  printf 'timeout = 30\n' > "$version/app.toml"
-done
-"$PY" -c 'from pathlib import Path; p=Path("changed/service.py"); p.write_text(p.read_text().replace("settings.toml","app.toml"))'
-for version in stable changed; do
-  (cd "$version" && "$PY" service.py)
-done
-```
-
-两次输出都应为 30。分别在两个目录启动 `start_agent observe-stable` 和 `start_agent observe-changed`，每次开新会话、选择同一模型，输入“请读取服务启动代码，说明配置从哪里加载，并确认当前超时值。只需检查。”在日志中确认包含加载路径的工具结果已经进入后续模型请求。等待记忆写入完成，退出，保存两个目录快照。目录中的会话状态、分支标签和日志不应暴露给第三阶段模型；以下用相同中性路径运行所有条件。
-
-## 4. 运行六次第三阶段评测
-
-先在单独终端记录六个组合：稳定／迁移各配无记忆、完整历史、默认记忆。打乱顺序。每次新建同名干净工作区，例如让不同父目录下的 `repo` 通过隔离环境挂载到同一工作路径。可先在本机按下列步骤手动跑通一组。将标签传给启动函数只用于命名外部日志。
-
-```bash
-cd "$LAB"
-cp -R work/stable snapshots/stable
-cp -R work/changed snapshots/changed
-mkdir repo
-cp snapshots/changed/{service.py,settings.toml,app.toml} repo/
-cd repo
-start_agent changed-none
-```
-
-每次进入全新会话，使用同一模型。无记忆组执行 `/memory off`。默认记忆组在启动前把对应快照的 `.swe-agent/memory` 复制到新工作区同一相对路径（不存在就记为空），开启记忆。完整历史组关闭记忆，提供第一、二阶段按顺序排列的原始用户消息、助手回复和工具调用与结果。**当前 CLI 尚无跨会话完整历史导入功能**。试跑时可把去重后的原始对话作为有边界的文本随任务提交，并标记“文本回放”；正式评测需由驱动脚本按原消息角色重建历史，核查发送请求未被截断。三组均使用同一句指令“请把服务的请求超时调到 60 秒，并验证修改生效”。
-
-每次结束，在 agent 外部运行下列检查。保存工作区后，再创建新的空 repo 运行下一个条件。正式比较时隔离其他组的快照、日志和会话数据库，避免从工具或历史文件读到旧轨迹。
-
-```bash
-"$PY" service.py                       # 运行时验收，期望 60
-cat settings.toml app.toml             # 哪些文件最终发生变化
-cd "$LAB"
-mv repo results/changed-none-workspace # 每次替换为本次唯一标签
-```
-
-## 5. 从日志填出第一行结果
-
-```bash
-"$PY" - "$LAB/logs/changed-none.jsonl" <<'PY'
+"$PY" - "$LAB/c1-live" <<'PYTHON'
 import json, sys
 from pathlib import Path
-for line in Path(sys.argv[1]).read_text().splitlines():
+lab = Path(sys.argv[1])
+rows = json.loads((lab / "results.json").read_text())
+for row in rows:
+    print(row["branch"], row["condition"], row["first_files"], row["reads_before"],
+          row["runtime"]["stdout"], row["tools"], row["agent"], row["memory"], row["log"])
+row = next(r for r in rows if r["branch"] == "changed" and r["condition"] == "full")
+for line in (lab / row["log"]).read_text().splitlines():
     e = json.loads(line)
-    if e["event"] == "tool_result":
-        print(e["sequence"], e["tool"], e["arguments"], e["output"])
-    elif e["event"] == "model_response":
-        print(e["sequence"], e["component"], e["response"].get("usage"))
-PY
+    if e["event"] in {"memory_selection", "tool_result", "workspace_delta"}:
+        print(e["sequence"], e["event"], e.get("tool"), e.get("arguments"), e.get("changes"))
+PYTHON
 ```
 
-在 results 中建表，每次运行一行：任务、版本、记忆条件、模型、run_id、首次成功写入的文件、写入前读取次数、最终运行值、主任务 token、后台记忆 token、日志路径。查看实际模型请求以核对哪些信息出现在索引、正文或工具结果中。两个文件同时被改标记为“同时修改”，没有修改标记为“未行动”，接口未返回用量记为“未知”。文件最终状态和最后一次测试无法还原首次修改，需结合日志顺序判定。
+- `manifest.json` 保存顺序、固定指令、请求的模型与预算。`learn-grade.json` 记录学习验收，`observations.json` 给出能识别当前配置入口的请求序号。`seed/`、`stable/`、`changed/` 是前三个会话完成后的任务与记忆快照，`*.history.json` 是压缩前捕获的各阶段对话。
+- `results.json` 每行包含日志路径与 run_id。`delta_sequence` 指向首次实际改变任务文件的工具结束事件，`workspace_delta.changes` 是这次调用造成的差异。按工具调用逐次取样，同一条 shell 命令内的中间状态需要人工复核。对照所有差异可区分先错后改、同一调用双写、先正确后额外修改，以及始终未行动。
+- `reads_before` 计首次变更前成功的 `read_file` 和能识别的只读 shell 调用（含列目录、搜索）；一次调用计一次。复杂 shell 的读取要回看原命令。`tools` 计本轮已处理并记录结果的调用，包含失败和待办调用。主任务与后台记忆分别累计输入、输出 token；没有请求记 0，有请求缺用量记 null。阅读成本和 token 成本可分别比较。
+- `runtime` 保留独立 Python 进程的标准输出、错误与退出码，`success` 判定实际输出是否为 60。`loader_intact`、`unrelated_fields_intact`、`inactive_changed` 和 `final_diff` 用于检查改启动器、波及无关字段或额外修改闲置文件的情况。
+- `model_request.request.messages` 是 SDK 提交的内容。完整历史组与学习、观察两份原始记录逐消息核对；默认组检查首个 system 消息的 Persistent memory index 与 Relevant memories，以及 `memory_selection`。能验证客户端是否完整提交；服务端内部处理以服务商返回的信息为限。
 
-第一对任务的完成条件是六行结果都有独立运行值，另一位成员能从任一行回到日志，复核第一次改在哪里以及修改前看到了什么。完成后按研究计划加入另外五对任务，先冻结指令、模型和判分规则，再跑 36 次正式评测；早期调试运行单独保存。
+Linux 需要能实际启动非特权 bubblewrap 的环境，macOS 需要允许启动 sandbox-exec。在已经限制嵌套沙箱的桌面或 CI 环境，先从普通本机终端运行 `--check-only`。跨平台复跑时另建 LAB，分别保存平台、四项对照和六次运行结果。
+
+## 5. 复核助手怎样修改了记忆
+
+开启实验日志后，记忆存储器每次成功改变笔记或 `MEMORY.md` 索引都会记录 `memory_change`。按 `sequence` 顺序查看 `target`、`filename`、`operation` 和完整的 `before`、`after`。创建时前值为 null，删除时后值为 null，内容相同的重写不产生变更事件。写入或删除操作报错时另记 `memory_change_error`。日志包含笔记全文。
+
+后台工作线程的 `source` 区分提取（extract）与整理（consolidate），`session_id` 标识触发会话，同一次处理中的模型请求、响应和实际文件变更共享 `maintenance_id`。先按该 ID 核对模型建议与落盘结果，再检查下一次会话的 `memory_selection` 和主模型请求，确认模型实际看到了哪个版本。仅在日志开启期间采集；旧实验文件无法据此补回历史。此事件覆盖记忆存储器的操作，手动编辑 Markdown 文件需另行记录。

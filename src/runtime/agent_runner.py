@@ -75,6 +75,7 @@ class AgentRunner:
         permission_policy: PermissionPolicy | None = None,
         context_checkpoint_manager: ContextCheckpointManager | None = None,
         execution_mode: str = "sandbox",
+        prior_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         if todo_reminder_interval < 1:
             raise ValueError("todo_reminder_interval must be at least 1")
@@ -85,6 +86,8 @@ class AgentRunner:
         # /model replace the provider credentials without rebuilding the loop.
         self.provider = provider
         self.workdir = (workdir or Path.cwd()).resolve()
+        # Keep imported conversations outside the current turn’s compaction window.
+        self.prior_messages = deepcopy(prior_messages or [])
         self.max_tokens = max_tokens
         self.max_tool_iterations = max_tool_iterations
         self.todo_reminder_interval = todo_reminder_interval
@@ -574,6 +577,7 @@ class AgentRunner:
                 "role": "system",
                 "content": system_prompt,
             },
+            *self.prior_messages,
             *session.history,
         ]
         self.renderer.start_thinking("Preparing response · Esc/Ctrl+C to stop")
@@ -615,6 +619,7 @@ class AgentRunner:
                 "role": "system",
                 "content": system_prompt,
             },
+            *self.prior_messages,
             *session.history,
         ]
 
