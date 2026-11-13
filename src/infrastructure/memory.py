@@ -4,7 +4,10 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import RLock
+from contextlib import contextmanager
+from src.teams.message_bus import FileLock
+from src.infrastructure.memory_revision import evidence_dialogue, revise_memories
 from collections.abc import Callable
 from typing import Any
 
@@ -20,7 +23,7 @@ MEMORY_SCOPES = ("session", "project")
 # sessions; everything else is session-scoped unless the extractor promotes it.
 DURABLE_MEMORY_TYPES = ("user", "feedback", "reference")
 MEMORY_INDEX_NAME = "MEMORY.md"
-_file_change_lock = Lock()
+_file_change_lock = RLock()
 
 
 @dataclass(frozen=True)
@@ -43,10 +46,14 @@ class MemoryStore:
         client: Any | None = None,
         model: str | None = None,
         model_getter: Callable[[], str | None] | None = None,
+        maintenance_mode: str = "default",
     ) -> None:
         if model is not None and model_getter is not None:
             raise ValueError("Pass either model or model_getter, not both.")
 
+        if maintenance_mode not in {"default", "evidence", "revise"}:
+            raise ValueError("Unknown memory maintenance mode")
+        self.maintenance_mode = maintenance_mode
         self.workdir = workdir.expanduser().resolve()
         self.memory_dir = self.workdir / ".swe-agent" / "memory"
         self.memory_index = self.memory_dir / MEMORY_INDEX_NAME
@@ -95,11 +102,12 @@ class MemoryStore:
             default_flow_style=False,
         ).strip()
         body = memory.content.rstrip()
-        self._change_file(
-            file_path,
-            f"---\n{frontmatter}\n---\n\n{body}\n",
-        )
-        self._rebuild_index()
+        with self._mutation():
+            self._change_file(
+                file_path,
+                f"---\n{frontmatter}\n---\n\n{body}\n",
+            )
+            self._rebuild_index()
         return file_path
 
     def write_memory_file(
@@ -154,6 +162,76 @@ class MemoryStore:
         if not path.exists() or not path.is_file():
             return None
         return path.read_text(encoding="utf-8")
+
+    def read_revision_memory(self, filename: str) -> dict[str, Any] | None:
+        """Read a mutable project fact with an opaque whole-file version."""
+        path = self._resolve_memory_path(filename)
+        if path.is_symlink() or path.resolve().parent != self.memory_dir.resolve():
+            return None
+        raw = self.read_memory_file(filename)
+        if raw is None:
+            return None
+        metadata, body = self._parse_frontmatter(raw)
+        if metadata.get("type") != "project" or metadata.get("scope") != "project":
+            return None
+        return {
+            "filename": path.name,
+            "version": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+            "description": str(metadata.get("description", "")),
+            "body": body,
+            "status": metadata.get("revision", {}).get("status", "active")
+            if isinstance(metadata.get("revision"), dict) else "active",
+        }
+
+    def update_memory(
+        self,
+        filename: str,
+        expected_version: str,
+        description: str,
+        body: str,
+        *,
+        status: str,
+        reason: str,
+        evidence: list[dict[str, Any]],
+        should_commit: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Commit a full note revision and index, preserving provenance metadata."""
+        if status not in {"active", "suspect"}:
+            return {"ok": False, "error": "invalid_status"}
+        if not description.strip() or not body.strip() or not reason.strip() or not evidence:
+            return {"ok": False, "error": "missing_revision_content"}
+        if body.lstrip().startswith("---"):
+            return {"ok": False, "error": "body_must_exclude_frontmatter"}
+        if status == "suspect":
+            description = "[Pending verification] " + description.removeprefix("[Pending verification] ")
+            body = "[Pending verification] " + body.removeprefix("[Pending verification] ")
+        with self._mutation():
+            if should_commit is not None and not should_commit():
+                return {"ok": False, "error": "cancelled"}
+            current = self.read_revision_memory(filename)
+            if current is None:
+                return {"ok": False, "error": "unknown_project_memory"}
+            if current["version"] != expected_version:
+                return {"ok": False, "error": "stale_version", "guidance": "Read this memory again before updating."}
+            path = self._resolve_memory_path(filename)
+            raw = path.read_text(encoding="utf-8")
+            metadata, _ = self._parse_frontmatter(raw)
+            metadata["description"] = description.strip()
+            metadata["revision"] = {"status": status, "evidence": evidence, "reason": reason.strip()}
+            content = "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+            content += "\n---\n\n" + body.strip() + "\n"
+            if raw == content:
+                return {"ok": True, "outcome": "unchanged", "version": current["version"]}
+            if should_commit is not None and not should_commit():
+                return {"ok": False, "error": "cancelled"}
+            self._change_file(path, content)
+            try:
+                self._rebuild_index()
+            except OSError:
+                self._change_file(path, raw)
+                raise
+            return {"ok": True, "outcome": "committed", "filename": filename,
+                    "version": hashlib.sha256(content.encode("utf-8")).hexdigest()}
 
     def list_memory_files(self) -> list[dict[str, str]]:
         """List all memory files with their metadata and body."""
@@ -401,6 +479,9 @@ class MemoryStore:
         if self.client is None or not self._current_model():
             return []
 
+        if self.maintenance_mode == "revise":
+            return revise_memories(self, messages, should_commit, session_id)
+
         memories = self.list_memory_files()
         existing_desc = "\n".join(
             f"- {memory['filename']}: {memory['name']} — "
@@ -408,6 +489,8 @@ class MemoryStore:
             for memory in memories
         ) or "(none)"
         dialogue = self._format_messages(messages, max_chars=4_000)
+        if self.maintenance_mode == "evidence":
+            dialogue, _ = evidence_dialogue(messages)
         prompt = (
             "Extract user preferences, constraints, or project facts from this dialogue.\n"
             "Return a JSON array. Each item: "
@@ -436,6 +519,15 @@ class MemoryStore:
             return []
 
         extracted = self._parse_json_array(response)
+        return self._store_extracted_memories(extracted, should_commit, session_id)
+
+    def _store_extracted_memories(
+        self,
+        extracted: list[Any],
+        should_commit: Callable[[], bool] | None,
+        session_id: str | None,
+    ) -> list[Memory]:
+        memories = self.list_memory_files()
         if should_commit is not None and not should_commit():
             return []
         existing_names = {
@@ -768,6 +860,13 @@ class MemoryStore:
             self.memory_index,
             "\n".join(lines) + "\n" if lines else "",
         )
+
+    @contextmanager
+    def _mutation(self):
+        """Serialize note and index commits across stores and local processes."""
+        with _file_change_lock:
+            with FileLock(self.memory_dir / ".write.lock"):
+                yield
 
     @staticmethod
     def _change_file(path: Path, content: str | None) -> None:

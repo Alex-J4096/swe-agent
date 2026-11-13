@@ -103,3 +103,41 @@ Linux 需要能实际启动非特权 bubblewrap 的环境，macOS 需要允许�
 开启实验日志后，记忆存储器每次成功改变笔记或 `MEMORY.md` 索引都会记录 `memory_change`。按 `sequence` 顺序查看 `target`、`filename`、`operation` 和完整的 `before`、`after`。创建时前值为 null，删除时后值为 null，内容相同的重写不产生变更事件。写入或删除操作报错时另记 `memory_change_error`。日志包含笔记全文。
 
 后台工作线程的 `source` 区分提取（extract）与整理（consolidate），`session_id` 标识触发会话，同一次处理中的模型请求、响应和实际文件变更共享 `maintenance_id`。先按该 ID 核对模型建议与落盘结果，再检查下一次会话的 `memory_selection` 和主模型请求，确认模型实际看到了哪个版本。仅在日志开启期间采集；旧实验文件无法据此补回历史。此事件覆盖记忆存储器的操作，手动编辑 Markdown 文件需另行记录。
+
+
+## 实验性自动修订
+
+当前实验实现已按 [固定版本记录](memory-revision-freeze.md) 固定，后续 C1 对照使用该记录中的 Git 标记和预算。
+
+实验分支提供启动参数 `--memory-maintenance default|evidence|revise`。默认值为 `default`。三种模式都在正常会话结束后由 MemoryWorker 执行。
+
+| 模式 | 维护行为 |
+|---|---|
+| default | 原来的提取与达到阈值后的批量整理。 |
+| evidence | 提取时按 tool_call_id 配对工具名、参数与返回值；仍使用原提取规则和批量整理。 |
+| revise | 独立记忆 subagent 搜索、读取、提交完整笔记更新并读回检查。沿用正常 AgentRunner，最多八轮工具迭代。跳过原来的整篇批量整理。 |
+
+在任务仓库中启动实验分支的程序，例如：
+
+```bash
+cd /path/to/task-repo
+/Users/alex4096/dev/swe-agent/.venv/bin/python /Users/alex4096/dev/swe-agent/.swe-agent/worktrees/memory-revision/main.py --memory-maintenance revise --experiment-log .swe-agent/revision.jsonl
+```
+
+每组使用独立任务仓库和记忆副本。工具名、参数、回执和消息顺序进入维护上下文，按完整消息保留最近 12,000 字符。超出预算的旧消息及单条超长回执不进入本次修订证据。原始对话仍由正常会话保存流程维护。
+
+subagent 有独立会话，收到本轮证据和初始候选文件名。初始候选仍来自现有关键词检索。它可通过 search_memory 扩展搜索，该工具结合正文关键词和摘要近似度排序，也可用空查询列出项目事实。可搜索和修订的范围为项目范围的 project 类型笔记。
+
+read_memory 返回分开的摘要、正文和整个文件的版本哈希。update_memory 接收文件名、读到的版本、完整新摘要、完整新正文、active/suspect 状态、原因及证据 ID。代码要求先读后写，引用本轮成功的工具回执，且至少包含一条读取或运行观察。编辑回执可一同引用以说明时序。无效引用会返回可用证据 ID；仅引用编辑操作会返回 missing_observation。提交前检查整个文件版本。笔记的名称、类型、范围等元数据由存储层保留。正文不接受 frontmatter。suspect 状态自动附加 Pending verification 提示。
+
+更新使用存储层统一提交，正文和索引同步写入，索引写入失败会回滚正文。版本冲突时工具返回 stale_version，subagent 可重新读取并修改。已取消维护会拒绝提交，并在下一次模型请求前结束。笔记版本变化使旧选择缓存失效。模型需要保留无关经验和验证命令，其语义正确性与保留质量仍需实验评价。
+
+三个记忆工具在专用权限策略中授权。该 subagent 的工具集限定为 search_memory、read_memory、update_memory，采用后台执行方式。正常的文件编辑及命令工具仍按原权限策略运行。
+
+JSONL 中 memory_subagent_started/finished 记录独立会话的执行情况。模型调用和工具结果的 component 为 memory，可与前台 agent 分别统计。memory_revision_decision 记录更新内容与 committed、read_required、invalid_evidence、stale_version、write_error 等结果；memory_change 保留实际写入前后内容，沿用原 maintenance_id。memory_consolidation_skipped 表示原批量整理已跳过。未开启日志时，修订状态与证据仍存在笔记 frontmatter 内。
+
+早期 C1 自动修订报告使用原 old_claim 精确子串接口，其结果保持为历史记录。当前 subagent 版本通过完整笔记和版本标识提交更新。实验汇总分别统计前台工具调用和 maintenance_tools，并将 subagent 模型用量计入 memory 成本。
+
+2026 年 11 月 13 日完成 subagent 功能回归。首轮暴露了复合引用被过度拒绝的问题：模型同时引用成功的编辑、回读和运行证据，工具仍因编辑 ID 不在允许列表而拒绝。修正后允许成功编辑/写入作为补充证据，同时要求至少一条读取或运行观察，并向失败调用返回可用 ID。
+
+最终版本复测原四个 claim_mismatch 场景及两个稳定场景，共六次真实模型维护。三个有明确启动代码的场景正确更新入口，一个只有运行冲突的场景写入 suspect，两个稳定场景保留了正确入口并补充本轮已验证信息。原验证偏好和任务文件保留。原始记录、源代码快照和 verification.json 位于本机 `.swe-agent/experiments/c1-subagent-smoke-02/`。初轮失败记录位于同级 c1-subagent-smoke-01。功能回归未执行后续编程任务，其结果不计入上一轮行为对照。

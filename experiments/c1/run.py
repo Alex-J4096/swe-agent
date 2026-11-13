@@ -59,16 +59,18 @@ class Transcript(list):
         super().append(message)
 
 
-def run_turn(lab, label, repo, sandbox, provider, prompt, memory, prior):
+def run_turn(lab, label, repo, sandbox, provider, prompt, memory, prior, maintenance_mode="default"):
     log = lab / f"{label}.jsonl"
-    configure_experiment_log(log, stage=label, model=MODEL, workdir=str(repo))
+    configure_experiment_log(log, stage=label, model=MODEL, workdir=str(repo),
+                             memory_maintenance=maintenance_mode)
     history = Transcript()
     session = Session(model=MODEL, history=history, memory_enabled=memory, provider_id="siliconflow")
     tools = ToolSet(registry=ToolRegistry([
         ReadFileTool(repo), WriteFileTool(repo), EditFileTool(repo),
         BashTool(repo, sandbox), TodoManager(),
     ]))
-    store = MemoryStore(repo, client=provider.client, model_getter=lambda: session.model)
+    store = MemoryStore(repo, client=provider.client, model_getter=lambda: session.model,
+                        maintenance_mode=maintenance_mode)
     cache = MemorySelectionCache()
     worker = MemoryWorker(store)
     selector = MemorySelectionWorker(store, cache)
@@ -132,7 +134,8 @@ def successful_shell_read(tool):
 
 
 def summarize(events, target):
-    tools = [e for e in events if e["event"] == "tool_result"]
+    tools = [e for e in events if e["event"] == "tool_result"
+             and e.get("component", "agent") == "agent"]
     first = next((e for e in events if e["event"] == "workspace_delta" and e["changes"]), None)
     changed = list(first["changes"]) if first else []
     if OLD in changed and NEW in changed:
@@ -151,7 +154,9 @@ def summarize(events, target):
         "run_id": events[0]["run_id"], "first_files": changed, "first_action": action,
         "delta_sequence": first["sequence"] if first else None,
         "reads_before": sum(successful_shell_read(e) for e in before),
-        "tools": len(tools), "agent": usage(events, "agent"), "memory": usage(events, "memory"),
+        "tools": len(tools),
+        "maintenance_tools": sum(e["event"] == "tool_result" and e.get("component") == "memory" for e in events),
+        "agent": usage(events, "agent"), "memory": usage(events, "memory"),
         "provider_models": sorted({e["response"]["model"] for e in events if e["event"] == "model_response"}),
         "turn": next(e for e in events if e["event"] == "turn_finished"),
     }

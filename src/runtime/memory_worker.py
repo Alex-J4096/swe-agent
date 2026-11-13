@@ -3,7 +3,7 @@ from copy import deepcopy
 from threading import Lock
 from typing import Any
 
-from src.infrastructure.experiment_log import experiment_log_status, memory_maintenance
+from src.infrastructure.experiment_log import experiment_log_status, memory_maintenance, record_event
 from src.infrastructure.memory import Memory, MemoryStore
 
 
@@ -74,18 +74,26 @@ class MemoryWorker:
         if not self._is_current(generation):
             return extracted, consolidated
 
+        mode = getattr(self.store, "maintenance_mode", "default")
+        source = "revise" if mode == "revise" else "extract"
         try:
-            with memory_maintenance(run_id, session_id, "extract"):
+            with memory_maintenance(run_id, session_id, source):
+                record_event("memory_maintenance_started", mode=mode)
                 extracted = self.store.extract_memories(
                     messages,
                     should_commit=lambda: self._is_current(generation),
                     session_id=session_id,
                 )
-        except Exception:
-            # Memory maintenance must not affect the agent's next turn.
-            pass
+        except Exception as exc:
+            with memory_maintenance(run_id, session_id, source):
+                record_event("memory_maintenance_error", mode=mode, error_type=type(exc).__name__)
 
         if not self._is_current(generation):
+            return extracted, consolidated
+        if mode == "revise":
+            # The legacy consolidator rewrites whole notes without evidence.
+            with memory_maintenance(run_id, session_id, source):
+                record_event("memory_consolidation_skipped", reason="revision_mode")
             return extracted, consolidated
 
         try:

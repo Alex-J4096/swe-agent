@@ -249,6 +249,8 @@ def confirm_team_plan_continuation(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Terminal coding agent")
+    parser.add_argument("--memory-maintenance", choices=("default", "evidence", "revise"),
+                        default="default", help="Experimental memory maintenance mode")
     parser.add_argument("--experiment-log", help="Append experiment events to this JSONL file")
     parser.add_argument("--execution-mode", choices=("sandbox", "host"), default="sandbox",
                         help="Shell execution mode; host requires once-only approval and has no OS sandbox")
@@ -259,7 +261,7 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     if args.experiment_log:
         configure_experiment_log(Path(args.experiment_log), workdir=str(Path.cwd()),
-                                 execution_mode=args.execution_mode)
+                                 execution_mode=args.execution_mode, memory_maintenance=args.memory_maintenance)
     workdir = Path.cwd().resolve()
     renderer = ConsoleRenderer()
 
@@ -311,6 +313,7 @@ def main(argv=None) -> None:
         workdir,
         client=provider.client,
         model_getter=lambda: session.model,
+        maintenance_mode=args.memory_maintenance,
     )
     memory_worker = MemoryWorker(memory_store)
     memory_selection_cache = MemorySelectionCache()

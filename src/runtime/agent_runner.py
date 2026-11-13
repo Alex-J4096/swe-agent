@@ -76,6 +76,7 @@ class AgentRunner:
         context_checkpoint_manager: ContextCheckpointManager | None = None,
         execution_mode: str = "sandbox",
         prior_messages: list[dict[str, Any]] | None = None,
+        log_component: str = "agent",
     ) -> None:
         if todo_reminder_interval < 1:
             raise ValueError("todo_reminder_interval must be at least 1")
@@ -84,6 +85,7 @@ class AgentRunner:
 
         # Keep the provider reference instead of copying the client.  This lets
         # /model replace the provider credentials without rebuilding the loop.
+        self.log_component = log_component
         self.provider = provider
         self.workdir = (workdir or Path.cwd()).resolve()
         # Keep imported conversations outside the current turn’s compaction window.
@@ -382,6 +384,7 @@ class AgentRunner:
                     todo_updated = True
 
                 record_event("tool_result", session_id=session.session_id,
+                             component=self.log_component,
                              tool=tool_name, arguments=arguments_json, output=output)
                 if on_tool_result is not None:
                     on_tool_result(tool_name, output)
@@ -587,7 +590,7 @@ class AgentRunner:
         try:
             try:
                 response = run_interruptible(lambda: request_with_retry(
-                    lambda: logged_completion(client, component="agent",
+                    lambda: logged_completion(client, component=self.log_component,
                         model=model,
                         messages=list(messages),
                         tools=[],
@@ -629,7 +632,7 @@ class AgentRunner:
             request_messages = deepcopy(messages)
             request_tools = deepcopy(tools)
             return run_interruptible(lambda: request_with_retry(
-                lambda: logged_completion(client, component="agent",
+                lambda: logged_completion(client, component=self.log_component,
                     model=model,
                     messages=request_messages,
                     tools=request_tools,

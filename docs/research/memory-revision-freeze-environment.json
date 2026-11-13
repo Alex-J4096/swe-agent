@@ -1,0 +1,49 @@
+{
+  "version_tag": "research/memory-revision-subagent-v1",
+  "recorded_date": "2026-11-13",
+  "python": "3.13.13 | packaged by Anaconda, Inc. | (main, Apr 14 2026, 06:14:06) [Clang 20.1.8 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "uv_lock_sha256": "b4bc3b48c17e333c4f1e9c909f8e5220b17cdf30372feddb54da66be936579a4",
+  "installed_distributions": {
+    "PyYAML": "6.0.3",
+    "Pygments": "2.20.0",
+    "annotated-types": "0.7.0",
+    "anyio": "4.14.1",
+    "certifi": "2026.6.17",
+    "distro": "1.9.0",
+    "dotenv": "0.9.9",
+    "h11": "0.16.0",
+    "httpcore": "1.0.9",
+    "httpx": "0.28.1",
+    "idna": "3.18",
+    "iniconfig": "2.3.0",
+    "jiter": "0.16.0",
+    "openai": "2.44.0",
+    "packaging": "26.2",
+    "path": "17.1.1",
+    "pluggy": "1.6.0",
+    "prompt_toolkit": "3.0.52",
+    "pydantic": "2.13.4",
+    "pydantic_core": "2.46.4",
+    "pytest": "9.1.1",
+    "python-dotenv": "1.2.2",
+    "sniffio": "1.3.1",
+    "socksio": "1.0.0",
+    "tqdm": "4.68.4",
+    "typing-inspection": "0.4.2",
+    "typing_extensions": "4.16.0",
+    "wcwidth": "0.8.2"
+  },
+  "initial_memory_sha256": {
+    "app/.swe-agent/memory/MEMORY.md": "e3e7e9dd55da8004892c111765c6f968bf6384fcb83e99309fa48d0325de32ee",
+    "app/.swe-agent/memory/active-config-file.md": "53dc75e04f5b5e7fb42ea6918e6d599cb88497426d9085edb546986efa9bfe86",
+    "app/.swe-agent/memory/user-preference-verify-application.md": "072f9443591eb8a83e3acfbdb48f253f9efebf914082df16c5f81db8269adba9",
+    "settings/.swe-agent/memory/MEMORY.md": "8cd90e38922b0942d176aec191401660a42aeda3ea648a73452dd4ebef71206c",
+    "settings/.swe-agent/memory/project-config-file.md": "461eba8945009ad79ab39a6319049a39b4fe59aa86f62b8a286a31a22453e627"
+  },
+  "tests": {
+    "passed": 301,
+    "skipped": 1
+  },
+  "new_behavior_batch_run": false
+}
