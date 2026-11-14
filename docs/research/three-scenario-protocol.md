@@ -1,6 +1,6 @@
 # C1、A1、T1 统一四组实验协议
 
-2026 年 11 月 13 日，C1 已接入 `experiments.transfer_run`。首轮使用 `transfer-four-arm-v2`，实际执行 A1/T1 的 16 个后续任务，C1 的八个因观察前置要求未满足而跳过，见 [首轮结果](three-scenario-01-results.md)。v3 补跑随后在学习阶段因同步修改闲置配置而未通过，未进入观察和后续任务。本次修复版标识为 `transfer-four-arm-v4`，下面说明两次指令修复及共用流程。
+2026 年 11 月 13 日，C1 已接入 `experiments.transfer_run`。首轮使用 `transfer-four-arm-v2`，实际执行 A1/T1 的 16 个后续任务，C1 的八个因观察前置要求未满足而跳过，见 [首轮结果](three-scenario-01-results.md)。v3 补跑随后在学习阶段因同步修改闲置配置而未通过，未进入观察和后续任务。`transfer-four-arm-v4` 已独立完成 C1 八个后续单元，五个严格通过，见 [C1 补跑结果](c1-transfer-v4-results.md)。下面说明两次指令修复及共用流程。
 
 ## v4：明确学习阶段只修改实际生效的配置
 

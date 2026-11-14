@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg role="img" aria-labelledby="title desc" width="762" height="335" preserveAspectRatio="xMinYMin meet" viewBox="0 0 762 335" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+<title id="title">默认记忆与自动修订的 token 消耗</title>
+<desc id="desc">C1 默认，前台 43,979，维护 6,926，总计 50,905。C1 修订，前台 18,386，维护 58,412，总计 76,798。A1 默认，前台 51,111，维护 14,335，总计 65,446。A1 修订，前台 59,184，维护 103,966，总计 163,150。T1 默认，前台 41,501，维护 16,369，总计 57,870。T1 修订，前台 39,541，维护 82,408，总计 121,949。每个任务各含稳定和变化现场一次。维护含观察后及任务后维护，共享学习与观察另计。</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="762" height="335"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-335)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="0" y="0" width="762" height="335" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<rect x="136" y="312" width="17" height="12" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(15%,37%,44%); fill-rule: evenodd;"/>
+			<text x="161" y="313" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 13px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,626) scale(1,-1)">任务前台</text>
+			<rect x="238" y="312" width="17" height="12" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(71%,37%,17%); fill-rule: evenodd;"/>
+			<text x="263" y="313" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 13px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,626) scale(1,-1)">记忆维护</text>
+			<path d="M 136,297 L 136,51 Z" style="stroke: rgb(87%,89%,90%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="132.664" y="32" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 12px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,64) scale(1,-1)">0</text>
+			<path d="M 258.222222,297 L 258.222222,51 Z" style="stroke: rgb(87%,89%,90%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="251.55022222222223" y="32" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 12px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,64) scale(1,-1)">40</text>
+			<path d="M 380.444444,297 L 380.444444,51 Z" style="stroke: rgb(87%,89%,90%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="373.77244444444443" y="32" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 12px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,64) scale(1,-1)">80</text>
+			<path d="M 502.666667,297 L 502.666667,51 Z" style="stroke: rgb(87%,89%,90%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="492.6586666666667" y="32" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 12px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,64) scale(1,-1)">120</text>
+			<path d="M 624.888889,297 L 624.888889,51 Z" style="stroke: rgb(87%,89%,90%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="614.8808888888889" y="32" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 12px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,64) scale(1,-1)">160</text>
+			<path d="M 136,51 L 686,51 Z" style="stroke: rgb(62%,67%,68%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="380.2615" y="9" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 13px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,18) scale(1,-1)">token（千）</text>
+			<text x="12" y="263" style="font-family: Helvetica-Bold; font-size: 15px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,526) scale(1,-1)">C1  配置</text>
+			<text x="102.69200000000001" y="275" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,550) scale(1,-1)">默认</text>
+			<rect x="136" y="270" width="134.3802777777778" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(15%,37%,44%); fill-rule: evenodd;"/>
+			<rect x="270.3802777777778" y="270" width="21.162777777777762" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(71%,37%,17%); fill-rule: evenodd;"/>
+			<text x="299.54305555555555" y="275" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,550) scale(1,-1)">50,905</text>
+			<text x="102.69200000000001" y="244" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,488) scale(1,-1)">修订</text>
+			<rect x="136" y="239" width="56.17944444444444" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(15%,37%,44%); fill-rule: evenodd;"/>
+			<rect x="192.17944444444444" y="239" width="178.48111111111112" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(71%,37%,17%); fill-rule: evenodd;"/>
+			<text x="378.66055555555556" y="244" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,488) scale(1,-1)">76,798</text>
+			<text x="12" y="178" style="font-family: Helvetica-Bold; font-size: 15px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,356) scale(1,-1)">A1  通知</text>
+			<text x="102.69200000000001" y="190" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,380) scale(1,-1)">默认</text>
+			<rect x="136" y="185" width="156.1725" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(15%,37%,44%); fill-rule: evenodd;"/>
+			<rect x="292.1725" y="185" width="43.80138888888888" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(71%,37%,17%); fill-rule: evenodd;"/>
+			<text x="343.9738888888889" y="190" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,380) scale(1,-1)">65,446</text>
+			<text x="102.69200000000001" y="159" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,318) scale(1,-1)">修订</text>
+			<rect x="136" y="154" width="180.84000000000003" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(15%,37%,44%); fill-rule: evenodd;"/>
+			<rect x="316.84000000000003" y="154" width="317.6738888888889" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(71%,37%,17%); fill-rule: evenodd;"/>
+			<text x="642.5138888888889" y="159" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,318) scale(1,-1)">163,150</text>
+			<text x="12" y="93" style="font-family: Helvetica-Bold; font-size: 15px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,186) scale(1,-1)">T1  测试</text>
+			<text x="102.69200000000001" y="105" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,210) scale(1,-1)">默认</text>
+			<rect x="136" y="100" width="126.80861111111113" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(15%,37%,44%); fill-rule: evenodd;"/>
+			<rect x="262.80861111111113" y="100" width="50.01638888888891" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(71%,37%,17%); fill-rule: evenodd;"/>
+			<text x="320.82500000000005" y="105" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,210) scale(1,-1)">57,870</text>
+			<text x="102.69200000000001" y="74" style="font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,148) scale(1,-1)">修订</text>
+			<rect x="136" y="69" width="120.81972222222225" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(15%,37%,44%); fill-rule: evenodd;"/>
+			<rect x="256.81972222222225" y="69" width="251.8022222222222" height="20" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(71%,37%,17%); fill-rule: evenodd;"/>
+			<text x="516.6219444444445" y="74" style="font-family: Helvetica-Bold; font-size: 14px;fill: rgb(9%,17%,21%); stroke:none;" transform="translate(0,148) scale(1,-1)">121,949</text>
+		</g>
+	</g>
+</svg>
